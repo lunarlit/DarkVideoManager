@@ -11,6 +11,7 @@ import { closeAllDatabases } from './db/connection'
 import { ensureDirectories } from './infra/paths'
 import { loadConfig, takeConfigRecoveryNotice } from './infra/config'
 import { drainLibraryWork } from './services/LibraryWorkService'
+import { ensureSingleLibrary } from './services/LibraryService'
 import { drainPlaybackProxyWork } from './ffmpeg/playback.js'
 import { createLogger } from './infra/logger'
 import { trimPlaybackCache } from './services/CacheService'
@@ -128,6 +129,13 @@ app.whenReady().then(async () => {
   }
   registerLocalMediaProtocol()
   registerAllHandlers()
+  try {
+    // The app runs as a single library. Guarantee one exists so the home view can
+    // open it without any library-selection step.
+    ensureSingleLibrary()
+  } catch (error) {
+    createLogger('startup').warn({ err: error }, '기본 라이브러리 준비 실패')
+  }
   stopQueueListener = onSubtitleQueueChanged(() => background.update())
   stopConversionQueueListener = onPlaybackConversionQueueChanged(() => background.update())
   stopSetupListener = onSubtitleSetupChanged(() => background.update())

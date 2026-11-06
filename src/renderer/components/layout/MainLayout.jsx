@@ -23,6 +23,12 @@ function MainLayout() {
       setOpenedLibraryId(null)
     }
   }, [activeLibraryId, librariesQuery.data, setActiveLibrary, setOpenedLibraryId])
+  // Single-library app: when nothing is active, adopt the one existing library.
+  // The effect below then opens its database automatically.
+  React.useEffect(() => {
+    if (activeLibraryId || !librariesQuery.data || librariesQuery.data.length === 0) return
+    setActiveLibrary(librariesQuery.data[0])
+  }, [activeLibraryId, librariesQuery.data, setActiveLibrary])
   React.useEffect(() => {
     if (!activeLibraryId) {
       if (openedLibraryId !== null) {

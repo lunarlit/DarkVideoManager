@@ -10,77 +10,13 @@ import VideoMetadataEditor from './VideoMetadataEditor'
 import MetadataImportDialog from './MetadataImportDialog'
 import ThumbnailSelector from './ThumbnailSelector'
 import VideoTechnicalInfo from './VideoTechnicalInfo'
-const STAR_COUNT = 5
-function StarRating({ value, onChange, disabled = false }) {
-  const [hovered, setHovered] = React.useState(0)
-  const displayValue = hovered || value
-  return (
-    <div
-      className={'relative inline-flex'}
-      onMouseLeave={() => setHovered(0)}
-      role={'slider'}
-      aria-label={'별점'}
-      aria-valuemin={0}
-      aria-valuemax={5}
-      aria-valuenow={displayValue}
-    >
-      <div className={'flex gap-0.5'}>
-        {Array.from(
-          {
-            length: STAR_COUNT,
-          },
-          (_, index) => {
-            const star = index + 1
-            return (
-              <div className={'relative text-xl leading-none'} key={star}>
-                <span className={'text-zinc-600'}>{'★'}</span>
-                {displayValue >= star && (
-                  <span className={'absolute inset-0 text-yellow-400'}>{'★'}</span>
-                )}
-                {displayValue < star && displayValue >= star - 0.5 && (
-                  <span
-                    className={'absolute inset-y-0 left-0 overflow-hidden text-yellow-400'}
-                    style={{
-                      width: '50%',
-                    }}
-                  >
-                    {'★'}
-                  </span>
-                )}
-              </div>
-            )
-          },
-        )}
-      </div>
-      <div className={'absolute inset-0 grid grid-cols-10'}>
-        {Array.from(
-          {
-            length: STAR_COUNT * 2,
-          },
-          (_, index) => {
-            const nextValue = (index + 1) * 0.5
-            return (
-              <button
-                type={'button'}
-                aria-label={`${nextValue}점`}
-                disabled={disabled}
-                className={'h-full w-full'}
-                onClick={() => onChange(nextValue)}
-                onMouseEnter={() => setHovered(nextValue)}
-                key={nextValue}
-              />
-            )
-          },
-        )}
-      </div>
-    </div>
-  )
-}
+import StarRating from './StarRating'
 function DetailPanel({
   video,
   libraryId,
   onClose,
   showCloseButton = true,
+  onPlay,
   onJumpToHighlight,
   onVideoDeleted,
   onVideoRestored,
@@ -250,6 +186,8 @@ function DetailPanel({
       })
       qc2.invalidateQueries({ queryKey: ['stats', libraryId] })
       qc2.invalidateQueries({ queryKey: ['video-metadata-options', libraryId] })
+      qc2.invalidateQueries({ queryKey: ['performer-counts', libraryId] })
+      qc2.invalidateQueries({ queryKey: ['folder-tree', libraryId] })
       setShowDeleteConfirm(false)
       onVideoDeleted?.()
     },
@@ -301,6 +239,24 @@ function DetailPanel({
     },
     onSettled: () => qc2.invalidateQueries({ queryKey: ['thumbnail-jobs', libraryId] }),
   })
+  const pruneThumbnails = useMutation({
+    onMutate: () => setActionError(null),
+    mutationFn: async () => {
+      const res = await thumbnailsApi.pruneForVideo(libraryId, video.id)
+      if (!res.ok) throw new Error(res.error)
+      return res.value
+    },
+    onSuccess: () => {
+      qc2.invalidateQueries({ queryKey: ['thumbnails', libraryId, video.id] })
+      qc2.invalidateQueries({ queryKey: ['video', libraryId, video.id] })
+      qc2.invalidateQueries({ queryKey: ['videos', libraryId] })
+    },
+    onError: (error) => {
+      const message = error instanceof Error ? error.message : String(error)
+      setActionError(`썸네일 후보를 정리하지 못했습니다: ${message}`)
+    },
+  })
+  const extraThumbnailCount = thumbnails.filter((thumbnail) => !thumbnail.isPrimary).length
   React.useEffect(() => {
     const current = memoDraftRef.current
     const sameVideo = current.libraryId === libraryId && current.videoId === video.id
@@ -373,26 +329,33 @@ function DetailPanel({
   const displayTitle = video.title?.trim() || video.fileName
   return (
     <div className={'relative flex h-full flex-col bg-zinc-900 text-sm text-zinc-100'}>
-      <div className={'flex items-center justify-between border-b border-zinc-800 px-4 py-3'}>
+      <div className={'flex items-start justify-between gap-3 border-b border-zinc-800 px-4 py-3'}>
         <div className={'min-w-0'}>
-          <p className={'truncate font-semibold'} title={displayTitle}>
+          <p className={'break-words font-semibold leading-snug [overflow-wrap:anywhere]'}>
             {displayTitle}
           </p>
           {video.title?.trim() && (
-            <p className={'truncate text-xs text-zinc-500'} title={video.fileName}>
-              {video.fileName}
-            </p>
+            <p className={'mt-0.5 break-all text-xs text-zinc-500'}>{video.fileName}</p>
           )}
         </div>
         {showCloseButton ? (
-          <button onClick={onClose} className={'text-zinc-500 hover:text-white'}>
+          <button onClick={onClose} className={'shrink-0 text-zinc-500 hover:text-white'}>
             {'닫기'}
           </button>
-        ) : (
-          <span className={'whitespace-nowrap text-xs tracking-wide text-zinc-600'}>
-            {'상세 정보'}
-          </span>
-        )}
+        ) : onPlay ? (
+          <button
+            type="button"
+            onClick={onPlay}
+            disabled={isRemoved}
+            aria-label={`${displayTitle} 재생`}
+            title="재생"
+            className="flex h-8 w-8 shrink-0 items-center justify-center rounded-full bg-indigo-600 text-white hover:bg-indigo-500 disabled:opacity-40"
+          >
+            <svg viewBox="0 0 24 24" fill="currentColor" className="ml-0.5 h-4 w-4" aria-hidden="true">
+              <path d="M8 5v14l11-7z" />
+            </svg>
+          </button>
+        ) : null}
       </div>
       {actionError && (
         <p
@@ -427,6 +390,13 @@ function DetailPanel({
             className="mt-3 w-full rounded bg-indigo-600 px-3 py-2 text-xs font-medium text-white hover:bg-indigo-500 disabled:opacity-50"
           >
             {restoreVideo.isPending ? '복구 중...' : '목록 복구'}
+          </button>
+          <button
+            type="button"
+            onClick={() => confirmRemoval('delete')}
+            className="mt-2 w-full rounded bg-red-800 px-3 py-2 text-xs font-medium text-white hover:bg-red-700"
+          >
+            완전히 삭제
           </button>
         </div>
       )}
@@ -487,38 +457,7 @@ function DetailPanel({
           <div ref={subtitleNavigationRef} className="h-full min-h-0" />
         ) : tab === 'info' ? (
           <div className={'space-y-4'}>
-            <VideoTechnicalInfo video={video} />
-            {!isRemoved && (
-              <button
-                type="button"
-                disabled={updateMeta.isPending}
-                className="w-full rounded bg-indigo-700 px-3 py-2 text-sm text-white disabled:opacity-50"
-                onClick={async () => {
-                  try {
-                    const draft = { ...memoDraftRef.current }
-                    if (memoTimerRef.current) clearTimeout(memoTimerRef.current)
-                    memoTimerRef.current = null
-                    pendingMemoRef.current = null
-                    if (draft.value !== draft.saved) {
-                      await updateMeta.mutateAsync({
-                        targetLibraryId: draft.libraryId,
-                        videoId: draft.videoId,
-                        patch: { memo: draft.value },
-                      })
-                    }
-                    if (
-                      currentVideoRef.current.libraryId === draft.libraryId &&
-                      currentVideoRef.current.videoId === draft.videoId
-                    )
-                      setShowMetadataImport(true)
-                  } catch {
-                    /* mutation displays its save error */
-                  }
-                }}
-              >
-                Stash에서 정보 가져오기
-              </button>
-            )}
+            <VideoMetadataEditor video={video} libraryId={libraryId} disabled={isRemoved} />
             {primaryThumbnail ? (
               <img
                 src={toLocalMediaUrl(primaryThumbnail.filePath, primaryThumbnail.id)}
@@ -571,15 +510,42 @@ function DetailPanel({
                     : '아직 썸네일이 없습니다'}
                 </p>
               </div>
-              <button
-                onClick={() => ensureThumbnail.mutate()}
-                disabled={isRemoved || ensureThumbnail.isPending || isThumbnailActive}
-                className={
-                  'rounded bg-zinc-800 px-3 py-1.5 text-xs text-zinc-200 hover:bg-zinc-700 disabled:opacity-40'
-                }
-              >
-                {ensureThumbnail.isPending || isThumbnailActive ? '작업 중...' : '다시 생성'}
-              </button>
+              <div className="flex shrink-0 gap-1.5">
+                <button
+                  type="button"
+                  title="대표 썸네일만 남기고 나머지 후보와 이미지 파일을 삭제합니다"
+                  onClick={() => {
+                    if (
+                      window.confirm(
+                        `대표 썸네일만 남기고 나머지 후보 ${extraThumbnailCount}개와 이미지 파일을 삭제할까요?`,
+                      )
+                    )
+                      pruneThumbnails.mutate()
+                  }}
+                  disabled={
+                    isRemoved ||
+                    extraThumbnailCount === 0 ||
+                    !thumbnails.some((thumbnail) => thumbnail.isPrimary) ||
+                    pruneThumbnails.isPending ||
+                    ensureThumbnail.isPending ||
+                    isThumbnailActive
+                  }
+                  className={
+                    'rounded bg-zinc-800 px-3 py-1.5 text-xs text-zinc-200 hover:bg-zinc-700 disabled:opacity-40'
+                  }
+                >
+                  {pruneThumbnails.isPending ? '정리 중...' : '대표 외 정리'}
+                </button>
+                <button
+                  onClick={() => ensureThumbnail.mutate()}
+                  disabled={isRemoved || ensureThumbnail.isPending || isThumbnailActive}
+                  className={
+                    'rounded bg-zinc-800 px-3 py-1.5 text-xs text-zinc-200 hover:bg-zinc-700 disabled:opacity-40'
+                  }
+                >
+                  {ensureThumbnail.isPending || isThumbnailActive ? '작업 중...' : '다시 생성'}
+                </button>
+              </div>
             </div>
             <ThumbnailJobStatus
               job={thumbnailJob}
@@ -612,7 +578,6 @@ function DetailPanel({
                 {formatDateTime$1(video.lastPlayedAt)}
               </p>
             </div>
-            <VideoMetadataEditor video={video} libraryId={libraryId} disabled={isRemoved} />
             <div>
               <p className={'mb-1 text-xs text-zinc-500'}>{'별점'}</p>
               <StarRating
@@ -648,7 +613,7 @@ function DetailPanel({
                   <p>{'A/D 또는 좌우: 이동'}</p>
                   <p>{'이동 간격: 설정 → 재생 탐색 · Shift 5초 / Ctrl 30초'}</p>
                   <p>{'0–9 / 숫자 키패드: 시작~90% 이동'}</p>
-                  <p>{'Alt+Enter: 전체화면 · Esc: 해제 (인앱)'}</p>
+                  <p>{'Enter: 전체화면 · Esc: 해제 (인앱)'}</p>
                   <p>{'+/−: 확대·축소 · 확대 후 드래그 (인앱)'}</p>
                   <p>{'I: 재생 정보 (인앱)'}</p>
                   <p>{'Z/C: 이전/다음 자막'}</p>
@@ -659,6 +624,38 @@ function DetailPanel({
                   <p>{'O: 외부 플레이어'}</p>
                 </div>
               </div>
+            )}
+            <VideoTechnicalInfo video={video} />
+            {!isRemoved && (
+              <button
+                type="button"
+                disabled={updateMeta.isPending}
+                className="w-full rounded bg-indigo-700 px-3 py-2 text-sm text-white disabled:opacity-50"
+                onClick={async () => {
+                  try {
+                    const draft = { ...memoDraftRef.current }
+                    if (memoTimerRef.current) clearTimeout(memoTimerRef.current)
+                    memoTimerRef.current = null
+                    pendingMemoRef.current = null
+                    if (draft.value !== draft.saved) {
+                      await updateMeta.mutateAsync({
+                        targetLibraryId: draft.libraryId,
+                        videoId: draft.videoId,
+                        patch: { memo: draft.value },
+                      })
+                    }
+                    if (
+                      currentVideoRef.current.libraryId === draft.libraryId &&
+                      currentVideoRef.current.videoId === draft.videoId
+                    )
+                      setShowMetadataImport(true)
+                  } catch {
+                    /* mutation displays its save error */
+                  }
+                }}
+              >
+                Stash에서 정보 가져오기
+              </button>
             )}
             {!isRemoved && (
               <div className={'space-y-2 border-t border-zinc-800 pt-4'}>
@@ -677,6 +674,13 @@ function DetailPanel({
                   className="w-full rounded border border-zinc-700 bg-zinc-800 px-3 py-2 text-xs font-medium text-zinc-200 hover:bg-zinc-700"
                 >
                   목록에서만 제거
+                </button>
+                <button
+                  type="button"
+                  onClick={() => confirmRemoval('delete')}
+                  className="w-full rounded bg-red-800 px-3 py-2 text-xs font-medium text-white hover:bg-red-700"
+                >
+                  완전히 삭제
                 </button>
               </div>
             )}
@@ -710,17 +714,13 @@ function DetailPanel({
             aria-labelledby={'delete-video-title'}
           >
             <h2 id={'delete-video-title'} className={'text-sm font-semibold text-red-200'}>
-              {deleteMode === 'trash' ? '휴지통으로 이동할까요?' : '목록에서만 제거할까요?'}
+              {REMOVAL_TEXT[deleteMode].title}
             </h2>
             <p className={'mt-2 text-xs leading-relaxed text-zinc-300'}>
-              {deleteMode === 'trash'
-                ? '원본 파일을 Windows 휴지통으로 이동하고 목록에서 숨깁니다. 별점, 메모, 하이라이트는 보관됩니다.'
-                : '원본 파일은 그대로 두고 목록에서만 숨깁니다. 별점, 메모, 하이라이트는 보관되며 다시 스캔해도 자동으로 표시되지 않습니다.'}
+              {REMOVAL_TEXT[deleteMode].body}
             </p>
             <p className="mt-2 text-xs leading-relaxed text-zinc-400">
-              {deleteMode === 'trash'
-                ? '다시 보려면 Windows 휴지통에서 원본을 복원한 뒤 제거한 항목에서 목록 복구를 눌러주세요.'
-                : '제거한 항목에서 목록 복구를 눌러 되돌릴 수 있습니다.'}
+              {REMOVAL_TEXT[deleteMode].note}
             </p>
             <div className={'mt-3 rounded border border-zinc-800 bg-black/40 p-3'}>
               <p className={'truncate text-xs font-medium text-zinc-100'} title={video.fileName}>
@@ -755,11 +755,7 @@ function DetailPanel({
                   'rounded bg-red-700 px-3 py-1.5 text-xs font-medium text-white hover:bg-red-600 disabled:opacity-50'
                 }
               >
-                {deleteVideo.isPending
-                  ? '처리 중...'
-                  : deleteMode === 'trash'
-                    ? '휴지통으로 이동'
-                    : '목록에서만 제거'}
+                {deleteVideo.isPending ? '처리 중...' : REMOVAL_TEXT[deleteMode].action}
               </button>
             </div>
           </div>
@@ -775,6 +771,26 @@ function DetailPanel({
       )}
     </div>
   )
+}
+const REMOVAL_TEXT = {
+  trash: {
+    title: '휴지통으로 이동할까요?',
+    body: '원본 파일을 Windows 휴지통으로 이동하고 목록에서 숨깁니다. 별점, 메모, 하이라이트는 보관됩니다.',
+    note: '다시 보려면 Windows 휴지통에서 원본을 복원한 뒤 제거한 항목에서 목록 복구를 눌러주세요.',
+    action: '휴지통으로 이동',
+  },
+  remove: {
+    title: '목록에서만 제거할까요?',
+    body: '원본 파일은 그대로 두고 목록에서만 숨깁니다. 별점, 메모, 하이라이트는 보관되며 다시 스캔해도 자동으로 표시되지 않습니다.',
+    note: '제거한 항목에서 목록 복구를 눌러 되돌릴 수 있습니다.',
+    action: '목록에서만 제거',
+  },
+  delete: {
+    title: '완전히 삭제할까요?',
+    body: '원본 파일을 휴지통을 거치지 않고 바로 삭제합니다. 영상 옆의 자막 파일, 썸네일 이미지, 재생 캐시와 함께 별점·메모·태그·배우·카테고리·하이라이트·재생 기록도 모두 지웁니다.',
+    note: '되돌릴 수 없습니다.',
+    action: '완전히 삭제',
+  },
 }
 function HighlightThumbnailCard({ highlight, thumbnail, onJump, onDelete }) {
   return (

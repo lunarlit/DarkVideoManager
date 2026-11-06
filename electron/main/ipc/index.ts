@@ -23,6 +23,8 @@ const mutationWorkKinds = new Map<string, LibraryWorkKind>([
   [IPC.LIBRARY.CLOSE, 'exclusive'],
   [IPC.LIBRARY.DELETE, 'exclusive'],
   [IPC.VIDEOS.UPDATE_META, 'exclusive'],
+  [IPC.VIDEOS.SET_FOLDER_CATEGORY, 'exclusive'],
+  [IPC.VIDEOS.DELETE_PERFORMER, 'exclusive'],
   [IPC.METADATA_IMPORT.APPLY, 'exclusive'],
   [IPC.VIDEOS.DELETE, 'exclusive'],
   [IPC.VIDEOS.RESTORE, 'exclusive'],
@@ -30,6 +32,7 @@ const mutationWorkKinds = new Map<string, LibraryWorkKind>([
   [IPC.HIGHLIGHTS.UPDATE, 'thumbnails'],
   [IPC.HIGHLIGHTS.DELETE, 'thumbnails'],
   [IPC.THUMBNAILS.SET_PRIMARY, 'thumbnails'],
+  [IPC.THUMBNAILS.PRUNE_FOR_VIDEO, 'thumbnails'],
   [IPC.THUMBNAILS.ENSURE_FOR_VIDEO, 'thumbnails'],
   [IPC.THUMBNAILS.CAPTURE_AT_TIME, 'thumbnails'],
   [IPC.THUMBNAILS.SAVE_IMAGE_CAPTURE, 'thumbnails'],
@@ -61,6 +64,7 @@ export function registerIpcHandler<C extends InvokeChannel>(
         channel === IPC.THUMBNAILS.SET_PRIMARY
           ? parsed.data[2]
           : channel === IPC.THUMBNAILS.ENSURE_FOR_VIDEO ||
+              channel === IPC.THUMBNAILS.PRUNE_FOR_VIDEO ||
               channel === IPC.THUMBNAILS.CAPTURE_AT_TIME ||
               channel === IPC.THUMBNAILS.SAVE_IMAGE_CAPTURE
             ? parsed.data[1]

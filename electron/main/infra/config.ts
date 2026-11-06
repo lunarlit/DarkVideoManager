@@ -47,6 +47,7 @@ const ConfigSchema = z
     seekStepSec: SeekStepSecZ.optional(),
     githubStarPromptShown: z.boolean().optional(),
     autoUpdateEnabled: z.boolean().optional(),
+    performerBlocklist: z.array(z.string()).optional(),
     nativePlayer: z
       .object({ name: z.enum(['mpv', 'ffplay', 'vlc']), path: NonemptyString })
       .nullable()

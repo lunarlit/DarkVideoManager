@@ -35,11 +35,6 @@ export default function ThumbnailSelector({
       <h3 className="text-xs font-semibold text-zinc-200">
         대표 썸네일 선택 · 후보 {thumbnails.length}개
       </h3>
-      <p className="text-xs leading-relaxed text-zinc-400">
-        후보를 누르면 카드와 상세 화면의 대표 이미지로 저장됩니다. 앱을 다시 열어도 유지됩니다. 자동
-        생성은 최대 5개이며 영상에 따라 더 적을 수 있습니다. 직접 캡처한 장면도 표시합니다. 다시
-        생성은 기존 후보를 새로 만들고 대표 선택도 초기화합니다.
-      </p>
       {thumbnails.length > 0 ? (
         <div className="grid grid-cols-2 gap-2">
           {thumbnails.map((thumbnail, index) => (

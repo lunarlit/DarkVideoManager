@@ -36,7 +36,6 @@ function VideoCard({
   onDoubleClick,
 }) {
   const primary = video.primaryThumbnailPath
-  const hasThumbnail = Boolean(primary)
   const hasSubtitles = Boolean(video.hasSubtitles)
   const displayTitle = video.title?.trim() || video.fileName
   const subtitleLabel = SUBTITLE_PHASE_LABELS[subtitleJob?.phase]
@@ -53,15 +52,15 @@ function VideoCard({
           ? 'border-cyan-400/40 text-cyan-200'
           : 'border-indigo-400/40 text-indigo-200'
   const ratingLabel = formatRating(video.rating)
-  const infoItems = [
-    ['별점', ratingLabel],
-    ['재생 횟수', video.playCount.toLocaleString()],
-    ['재생 시간', formatDuration(video.playTimeSec)],
-    ['마지막 재생', formatDateTime(video.lastPlayedAt)],
-  ]
+  const performerNames = splitList(video.performers)
+  const tagNames = splitList(video.tags)
+  const playSummary =
+    video.playCount > 0
+      ? `재생 ${video.playCount.toLocaleString()}회 · 총 ${formatDuration(video.playTimeSec)} · ${formatDateTime(video.lastPlayedAt)}`
+      : '재생 기록 없음'
   return (
     <div
-      className="relative h-[440px] w-full min-w-0"
+      className="relative h-full w-full min-w-0"
       role="group"
       aria-label={`${displayTitle} 영상 카드`}
     >
@@ -71,7 +70,7 @@ function VideoCard({
         aria-label={`${displayTitle} 영상 카드`}
         className={`group flex h-full w-full min-w-0 flex-col overflow-hidden rounded-xl border bg-zinc-900 text-left transition-colors ${isSelected ? 'border-indigo-500 ring-1 ring-indigo-500/40' : isSubtitleRunning ? 'border-cyan-500/70 hover:border-cyan-400' : 'border-zinc-800 hover:border-zinc-500'}`}
       >
-        <div className={'relative h-32 w-full flex-none overflow-hidden bg-zinc-800'}>
+        <div className={'relative aspect-video w-full flex-none overflow-hidden bg-zinc-800'}>
           {primary ? (
             <ProtectedThumbnail
               src={toLocalMediaUrl(primary, video.id)}
@@ -100,33 +99,6 @@ function VideoCard({
               </svg>
             </div>
           )}
-          <div
-            className={
-              'absolute inset-x-0 top-0 flex items-start justify-between gap-2 bg-gradient-to-b from-black/70 to-transparent p-2.5'
-            }
-          >
-            <div className={'flex flex-wrap items-center gap-1.5'}>
-              <span
-                className={`rounded px-2 py-1 text-[10px] font-semibold uppercase tracking-wide ${hasThumbnail ? 'bg-emerald-500/85 text-white' : 'bg-amber-400/90 text-black'}`}
-              >
-                {hasThumbnail ? '썸네일' : '썸네일 없음'}
-              </span>
-              <span
-                className={`rounded px-2 py-1 text-[10px] font-semibold tracking-wide ${hasSubtitles ? 'bg-sky-500/85 text-white' : 'bg-zinc-700/85 text-zinc-200'}`}
-              >
-                {hasSubtitles ? '자막 있음' : '자막 없음'}
-              </span>
-            </div>
-            {video.tags && (
-              <span
-                className={
-                  'ml-2 max-w-[58%] truncate rounded bg-black/55 px-2 py-1 text-[10px] text-zinc-100'
-                }
-              >
-                {firstTag(video.tags)}
-              </span>
-            )}
-          </div>
           {subtitleLabel && (
             <div
               role="status"
@@ -168,108 +140,55 @@ function VideoCard({
             </div>
           )}
         </div>
-        <div
-          className={
-            'grid min-h-0 w-full min-w-0 flex-1 grid-cols-[minmax(0,1fr)] grid-rows-[80px_104px_minmax(0,1fr)_16px] gap-2 p-3'
-          }
-        >
-          <div className={'grid min-w-0 grid-rows-[20px_36px_16px] gap-1 overflow-hidden'}>
-            <div className={'flex min-w-0 items-center gap-2'}>
-              <div className={'flex items-center gap-0.5'} aria-label={`별점 ${ratingLabel}`}>
-                {Array.from(
-                  {
-                    length: 5,
-                  },
-                  (_, index) => {
-                    const starIndex = index + 1
-                    const isFilled = video.rating >= starIndex
-                    const isHalfFilled = !isFilled && video.rating >= starIndex - 0.5
-                    return (
-                      <span
-                        className={`text-sm leading-none ${isFilled || isHalfFilled ? 'text-yellow-400' : 'text-zinc-700'}`}
-                        key={starIndex}
-                      >
-                        {isHalfFilled ? '⯨' : '★'}
-                      </span>
-                    )
-                  },
-                )}
-              </div>
-              <span
-                className={
-                  'rounded bg-yellow-400/15 px-1.5 py-0.5 text-[10px] font-semibold text-yellow-300'
-                }
-              >
-                {ratingLabel}
-              </span>
-            </div>
-            <p
-              className={
-                'line-clamp-2 h-9 min-w-0 overflow-hidden text-sm font-semibold leading-[1.125rem] text-zinc-100 [overflow-wrap:anywhere]'
-              }
-              title={displayTitle}
-            >
-              {displayTitle}
-            </p>
-            <p
-              className={'h-4 min-w-0 truncate text-[11px] leading-4 text-zinc-500'}
-              title={video.fileName}
-            >
-              {video.fileName}
-            </p>
+        <div className={'flex min-h-0 w-full min-w-0 flex-1 flex-col gap-1.5 p-3'}>
+          <div className={'flex h-4 items-center gap-0.5'} aria-label={`별점 ${ratingLabel}`}>
+            {Array.from({ length: 5 }, (_, index) => {
+              const starIndex = index + 1
+              const isFilled = video.rating >= starIndex
+              const isHalfFilled = !isFilled && video.rating >= starIndex - 0.5
+              return (
+                <span
+                  className={`text-sm leading-none ${isFilled || isHalfFilled ? 'text-yellow-400' : 'text-zinc-700'}`}
+                  key={starIndex}
+                >
+                  {isHalfFilled ? '⯨' : '★'}
+                </span>
+              )
+            })}
           </div>
-          <div
+          <p
             className={
-              'grid min-w-0 grid-cols-2 grid-rows-2 gap-2 rounded-lg border border-zinc-800 bg-zinc-950/50 p-2'
+              'line-clamp-2 h-9 min-w-0 flex-none overflow-hidden text-sm font-semibold leading-[1.125rem] text-zinc-100 [overflow-wrap:anywhere]'
             }
+            title={video.fileName}
           >
-            {infoItems.map(([label, value]) => (
-              <div
-                className={
-                  'flex min-h-0 min-w-0 flex-col justify-between rounded-md border border-zinc-800/80 bg-zinc-900/70 px-2 py-1'
-                }
-                key={label}
-              >
-                <p className={'truncate text-[10px] leading-3 tracking-wide text-zinc-500'}>
-                  {label}
-                </p>
-                <p className={'truncate text-xs font-medium leading-4 text-zinc-100'} title={value}>
-                  {value}
-                </p>
-              </div>
-            ))}
-          </div>
+            {displayTitle}
+          </p>
+          <ChipRow
+            items={performerNames}
+            empty="배우 정보 없음"
+            chipClassName="bg-indigo-600/25 text-indigo-200"
+          />
+          <ChipRow
+            items={tagNames}
+            empty="태그 없음"
+            chipClassName="bg-zinc-800 text-zinc-300"
+          />
+          <p className={'mt-auto h-4 truncate text-[11px] leading-4 text-zinc-400'} title={playSummary}>
+            {playSummary}
+          </p>
           <div
             className={
-              'min-h-0 min-w-0 overflow-hidden rounded-lg border border-zinc-800 bg-zinc-950/40 p-1.5'
-            }
-          >
-            <p className={'text-[10px] leading-3 uppercase tracking-wide text-zinc-600'}>
-              {'메모'}
-            </p>
-            {video.memo ? (
-              <p
-                className={
-                  'mt-1 line-clamp-2 whitespace-pre-wrap text-xs leading-4 text-zinc-300 [overflow-wrap:anywhere]'
-                }
-                title={video.memo}
-              >
-                {video.memo}
-              </p>
-            ) : (
-              <p className={'mt-1 text-xs leading-4 text-zinc-600'}>{'메모 없음'}</p>
-            )}
-          </div>
-          <div
-            className={
-              'flex min-w-0 items-center justify-between gap-2 text-[11px] leading-4 text-zinc-500'
+              'flex h-4 min-w-0 items-center justify-between gap-2 text-[11px] leading-4 text-zinc-500'
             }
           >
             <span className="truncate">
               {'이어보기 '}
               {formatDuration(video.resumePosSec)}
             </span>
-            <span className="shrink-0">{hasSubtitles ? '자막 준비됨' : '자막 없음'}</span>
+            <span className={`shrink-0 ${hasSubtitles ? 'text-sky-300' : ''}`}>
+              {hasSubtitles ? '자막 준비됨' : '자막 없음'}
+            </span>
           </div>
         </div>
       </button>
@@ -305,8 +224,32 @@ function formatDateTime(value) {
   if (Number.isNaN(parsed.getTime())) return value
   return parsed.toLocaleDateString()
 }
-function firstTag(tags2) {
-  return tags2.split(',')[0]?.trim() || tags2
+function splitList(value) {
+  return (value || '')
+    .split(',')
+    .map((item) => item.trim())
+    .filter(Boolean)
+}
+function ChipRow({ items, empty, chipClassName }) {
+  return (
+    <div
+      className={'flex h-5 min-w-0 flex-none flex-wrap gap-1 overflow-hidden'}
+      title={items.join(', ')}
+    >
+      {items.length ? (
+        items.map((item) => (
+          <span
+            className={`max-w-full truncate rounded px-1.5 py-0.5 text-[10px] leading-4 ${chipClassName}`}
+            key={item}
+          >
+            {item}
+          </span>
+        ))
+      ) : (
+        <span className={'text-[10px] leading-5 text-zinc-600'}>{empty}</span>
+      )}
+    </div>
+  )
 }
 function formatRating(rating) {
   return `${Number(rating || 0).toFixed(1)}/5`

@@ -1,5 +1,5 @@
 import { shell, type WebContents } from 'electron'
-import { lstat } from 'fs/promises'
+import { lstat, rm } from 'fs/promises'
 import { accessSync, constants } from 'fs'
 import type { Database } from 'better-sqlite3'
 import { needsPlaybackProxy } from '../ffmpeg/playback.js'
@@ -15,10 +15,22 @@ import type { NativePlayerOptions, NativePlayerInfo } from '@shared/types'
 import { endPlayback } from './PlaybackService'
 import { getDatabase } from '../db/connection'
 import { VideoRepository } from '../db/repositories/VideoRepository'
-import { SearchQuery, SearchResult, Video, VideoMeta, VideoMetadataOptions } from '@shared/types'
+import {
+  SearchQuery,
+  SearchResult,
+  Video,
+  VideoMeta,
+  VideoMetadataOptions,
+  PerformerCount,
+} from '@shared/types'
 import { purgeVideoPlaybackCache, beginPlaybackCacheLease, trimPlaybackCache } from './CacheService'
 import { createLogger } from '../infra/logger'
-import { acquireSourceFile } from './SourceFileUsage'
+import { acquireSourceFile, isSourceFileInUse } from './SourceFileUsage'
+import { ThumbnailRepository } from '../db/repositories/ThumbnailRepository'
+import { SubtitleRepository } from '../db/repositories/SubtitleRepository'
+import { removeThumbnailFiles } from './thumbnailFiles'
+import { updateConfig } from '../infra/config'
+import { normalizePerformerKey } from './AutoTagService'
 
 const log = createLogger('VideoService')
 
@@ -34,6 +46,12 @@ export function getVideoMetadataOptions(libraryId: string, removed = false): Vid
   return new VideoRepository(db).metadataOptions(removed)
 }
 
+export function getPerformerCounts(libraryId: string, removed = false): PerformerCount[] {
+  const db = getDatabase(libraryId)
+  if (!db) throw new Error('라이브러리가 열려 있지 않습니다')
+  return new VideoRepository(db).performerCounts(removed)
+}
+
 export function getVideo(libraryId: string, videoId: string): Video | null {
   const db = getDatabase(libraryId)
   if (!db) throw new Error('라이브러리가 열려 있지 않습니다')
@@ -44,6 +62,35 @@ export function updateVideoMeta(libraryId: string, videoId: string, meta: VideoM
   const db = getDatabase(libraryId)
   if (!db) throw new Error('라이브러리가 열려 있지 않습니다')
   new VideoRepository(db).updateMeta(videoId, meta)
+}
+
+/** A random video id among the videos matching the query's filters. */
+export function randomVideoId(libraryId: string, query: SearchQuery): string | null {
+  const db = getDatabase(libraryId)
+  if (!db) throw new Error('라이브러리가 열려 있지 않습니다')
+  return new VideoRepository(db).randomId(query)
+}
+
+/** Remove a wrongly detected performer from all videos and block the word so
+ *  later imports do not detect it again. Returns the number of videos changed. */
+export function deletePerformer(libraryId: string, name: string): number {
+  const db = getDatabase(libraryId)
+  if (!db) throw new Error('라이브러리가 열려 있지 않습니다')
+  const changed = new VideoRepository(db).removePerformer(name)
+  const key = normalizePerformerKey(name)
+  if (key)
+    updateConfig((config) => {
+      const list = config.performerBlocklist ?? []
+      return list.includes(key) ? config : { ...config, performerBlocklist: [...list, key] }
+    })
+  return changed
+}
+
+/** Set the category of every video in a folder (subfolders included). */
+export function setCategoryForFolder(libraryId: string, folder: string, category: string): number {
+  const db = getDatabase(libraryId)
+  if (!db) throw new Error('라이브러리가 열려 있지 않습니다')
+  return new VideoRepository(db).setCategoryForFolder(folder, category)
 }
 
 const pendingRemovals = new Set<string>()
@@ -81,8 +128,9 @@ function assertReadableVideo(filePath: string): void {
 export async function deleteVideo(
   libraryId: string,
   videoId: string,
-  mode: 'trash' | 'remove' = 'trash',
+  mode: 'trash' | 'remove' | 'delete' = 'trash',
 ): Promise<void> {
+  if (mode === 'delete') return deleteVideoPermanently(libraryId, videoId)
   if (mode !== 'trash' && mode !== 'remove') throw new Error('Invalid removal mode')
   const key = JSON.stringify([libraryId, videoId])
   if (pendingRemovals.has(key)) throw new Error('영상 제거 또는 복원이 진행 중입니다')
@@ -114,6 +162,53 @@ export async function deleteVideo(
     }
     void purgeVideoPlaybackCache(libraryId, videoId).catch((error) =>
       log.warn({ error }, '제거한 영상의 캐시 정리 실패'),
+    )
+  } finally {
+    pendingRemovals.delete(key)
+  }
+}
+
+/**
+ * Permanently delete a video: the source file (not to the recycle bin), its
+ * sidecar subtitle files, its thumbnail images and playback cache, and every
+ * DB record (video, thumbnails, subtitles, highlights, play history). Works for
+ * removed items too; a source file that is already gone is not an error.
+ */
+async function deleteVideoPermanently(libraryId: string, videoId: string): Promise<void> {
+  const key = JSON.stringify([libraryId, videoId])
+  if (pendingRemovals.has(key)) throw new Error('영상 제거 또는 복원이 진행 중입니다')
+  pendingRemovals.add(key)
+  try {
+    const db = getDatabase(libraryId)
+    if (!db) throw new Error('라이브러리가 열려 있지 않습니다')
+    assertWritable(db)
+    const repository = new VideoRepository(db)
+    const video = repository.findById(videoId)
+    if (!video) throw new Error('Video not found')
+    if (isSourceFileInUse(video.filePath))
+      throw new Error('재생 중인 영상은 삭제할 수 없습니다. 재생을 끝낸 뒤 다시 시도해 주세요.')
+    const thumbnails = new ThumbnailRepository(db).findByVideoId(videoId)
+    const subtitleFiles = new SubtitleRepository(db)
+      .findByVideoId(videoId)
+      .filter((subtitle) => !subtitle.isEmbedded && subtitle.filePath)
+      .map((subtitle) => subtitle.filePath)
+    // Delete the source first: if that fails, nothing else has changed.
+    try {
+      await rm(video.filePath, { maxRetries: 3, retryDelay: 100 })
+    } catch (error) {
+      if ((error as NodeJS.ErrnoException).code !== 'ENOENT')
+        throw new Error('원본 파일을 삭제하지 못했습니다: ' + (error as Error).message, {
+          cause: error,
+        })
+    }
+    repository.deletePermanently(videoId)
+    for (const file of subtitleFiles)
+      await rm(file, { force: true }).catch((error) =>
+        log.warn({ error, file }, '자막 파일 삭제 실패'),
+      )
+    await removeThumbnailFiles(libraryId, thumbnails)
+    void purgeVideoPlaybackCache(libraryId, videoId).catch((error) =>
+      log.warn({ error }, '삭제한 영상의 캐시 정리 실패'),
     )
   } finally {
     pendingRemovals.delete(key)

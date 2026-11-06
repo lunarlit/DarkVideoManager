@@ -1,6 +1,5 @@
 import {
   chmodSync,
-  existsSync,
   mkdirSync,
   mkdtempSync,
   readFileSync,
@@ -31,7 +30,6 @@ import {
   listLibraries,
   refreshLibrary,
   closeLibrary,
-  deleteLibrary,
   openLibrary,
 } from './LibraryService'
 import {
@@ -48,9 +46,7 @@ import { SubtitleRepository } from '../db/repositories/SubtitleRepository'
 import { loadConfig, saveConfig, updateConfig } from '../infra/config'
 import { probeVideo } from '../ffmpeg/ffprobe'
 import { generateThumbnails } from '../ffmpeg/thumbnail'
-import { createAbortError, thumbnailQueue } from '../ffmpeg/queue'
-import { cancelThumbnailJob, listThumbnailJobs } from './ThumbnailJobService'
-import { ThumbnailRepository } from '../db/repositories/ThumbnailRepository'
+import { createAbortError } from '../ffmpeg/queue'
 import { closeManagedNativePlayers } from './NativePlayerService'
 import { closeAllMpvSessions } from './MpvSessionService.js'
 
@@ -162,6 +158,24 @@ describe('multi-folder libraries and live switching', () => {
     })
   })
 
+  it('fills in media info on refresh for videos imported without it', async () => {
+    const { library, directory, repository } = makeLibrary()
+    const filePath = movie(directory, 'unprobed')
+    vi.mocked(probeVideo).mockRejectedValueOnce(new Error('ffprobe missing'))
+    await importFolder(library.id, directory, win)
+    expect(repository.findByPath(filePath)?.durationSec).toBeFalsy()
+    vi.mocked(probeVideo).mockResolvedValueOnce({ durationSec: 42, width: 1920, height: 1080 })
+    expect(await refreshLibrary(library.id, win)).toMatchObject({ added: 0, skipped: 1 })
+    expect(repository.findByPath(filePath)).toMatchObject({
+      durationSec: 42,
+      width: 1920,
+      height: 1080,
+    })
+    vi.mocked(probeVideo).mockClear()
+    await refreshLibrary(library.id, win)
+    expect(probeVideo).not.toHaveBeenCalled()
+  })
+
   it('does not import or register any selected root when another selected root is inaccessible', async () => {
     const { library, repository } = makeLibrary()
     const valid = join(root, 'valid')
@@ -255,7 +269,8 @@ describe('selected video file imports', () => {
     expect(result).toEqual({ added: 1, skipped: 0, removed: 0, errors: [] })
     expect(scan).not.toHaveBeenCalled()
     expect(probeVideo).toHaveBeenCalledTimes(1)
-    expect(generateThumbnails).toHaveBeenCalledTimes(1)
+    // Importing no longer generates thumbnails automatically.
+    expect(generateThumbnails).not.toHaveBeenCalled()
     expect(repository.count()).toBe(1)
     const video = repository.findByPath(selected)!
     expect(new SubtitleRepository(db).findByVideoId(video.id)).toMatchObject([
@@ -322,76 +337,6 @@ describe('selected video file imports', () => {
 })
 
 describe('cancellable folder work', () => {
-  it('announces the running file and skips a cancelled video while later videos finish', async () => {
-    const { library, directory, repository, db } = makeLibrary()
-    movie(directory, 'first')
-    movie(directory, 'second')
-    movie(directory, 'third')
-    let started!: () => void
-    const didStart = new Promise<void>((resolve) => {
-      started = resolve
-    })
-    let cancelledOutput = ''
-    vi.mocked(generateThumbnails).mockImplementation(
-      async (file, output, id, _duration, signal, onProgress) => {
-        expect(
-          events.some(
-            (event) =>
-              event.phase === 'thumbnails' && event.currentFile === file.split(/[\\/]/).at(-1),
-          ),
-        ).toBe(true)
-        const filePath = join(output, id + '.jpg')
-        writeFileSync(filePath, 'frame')
-        if (file.endsWith('first.mp4')) {
-          cancelledOutput = output
-          started()
-          await new Promise<void>((_resolve, reject) =>
-            signal!.addEventListener('abort', () => reject(createAbortError()), { once: true }),
-          )
-        }
-        onProgress?.(5, 5)
-        return [{ filePath, timeSec: 1 }]
-      },
-    )
-    const work = importFolder(library.id, directory, win)
-    await didStart
-    const first = repository.findByPath(join(directory, 'first.mp4'))!
-    expect(cancelThumbnailJob(library.id, first.id)).toBe(true)
-    expect(await work).toMatchObject({ added: 3, errors: [] })
-    expect(existsSync(cancelledOutput)).toBe(false)
-    expect(new ThumbnailRepository(db).findByVideoId(first.id)).toEqual([])
-    expect(listThumbnailJobs(library.id).find((job) => job.videoId === first.id)?.phase).toBe(
-      'cancelled',
-    )
-    expect(listThumbnailJobs(library.id).filter((job) => job.phase === 'completed')).toHaveLength(2)
-    expect(events.at(-1)?.phase).toBe('done')
-    expect(isLibraryBusy(library.id)).toBe(false)
-  })
-
-  it('reports empty extraction as a failed video and lets remaining thumbnails finish', async () => {
-    const { library, directory } = makeLibrary()
-    movie(directory, 'broken')
-    movie(directory, 'healthy')
-    let failedOutput = ''
-    vi.mocked(generateThumbnails).mockImplementation(async (file, output, id) => {
-      const filePath = join(output, id + '.jpg')
-      writeFileSync(filePath, 'frame')
-      if (file.endsWith('broken.mp4')) {
-        failedOutput = output
-        return []
-      }
-      return [{ filePath, timeSec: 1 }]
-    })
-    const result = await importFolder(library.id, directory, win)
-    expect(result.errors).toHaveLength(1)
-    expect(result.errors[0]).toContain('broken.mp4')
-    expect(result.cancelled).toBeUndefined()
-    expect(existsSync(failedOutput)).toBe(false)
-    expect(listThumbnailJobs(library.id)).toMatchObject([
-      { fileName: 'broken.mp4', phase: 'failed' },
-      { fileName: 'healthy.mp4', phase: 'completed' },
-    ])
-  })
   it.skipIf(process.platform !== 'win32')(
     'creates a library with a read-only backup that already protects the empty registry',
     () => {
@@ -468,46 +413,6 @@ describe('cancellable folder work', () => {
     expect(repository.count()).toBe(3)
     expect(events.at(-1)).toMatchObject({ phase: 'cancelled', libraryId: library.id })
     expect(isLibraryBusy(library.id)).toBe(false)
-  })
-
-  it('waits for thumbnail cancellation cleanup and blocks close/delete while busy', async () => {
-    const { library, directory, repository } = makeLibrary()
-    movie(directory, 'first')
-    movie(directory, 'second')
-    movie(directory, 'third')
-    let started!: () => void, releaseCleanup!: () => void
-    const didStart = new Promise<void>((resolve) => {
-      started = resolve
-    })
-    const cleanup = new Promise<void>((resolve) => {
-      releaseCleanup = resolve
-    })
-    vi.mocked(generateThumbnails).mockImplementation(
-      async (_file, _output, _id, _duration, signal) => {
-        started()
-        await new Promise<void>((resolve) => {
-          if (signal?.aborted) resolve()
-          else signal?.addEventListener('abort', () => resolve(), { once: true })
-        })
-        await cleanup
-        throw createAbortError()
-      },
-    )
-    const work = importFolder(library.id, directory, win)
-    await didStart
-    expect(isLibraryBusy(library.id)).toBe(true)
-    expect(() => closeLibrary(library.id)).toThrow('작업이 진행 중')
-    expect(() => deleteLibrary(library.id)).toThrow('작업이 진행 중')
-    await expect(withLibraryWork(library.id, async () => 0)).rejects.toThrow('다른 작업')
-    expect(cancelLibraryWork(library.id)).toBe(true)
-    await Promise.resolve()
-    expect(isLibraryBusy(library.id)).toBe(true)
-    releaseCleanup()
-    expect(await work).toMatchObject({ added: 3, cancelled: true, errors: [] })
-    expect(repository.count()).toBe(3)
-    expect(isLibraryBusy(library.id)).toBe(false)
-    expect(thumbnailQueue.pending).toBe(0)
-    expect(thumbnailQueue.size).toBe(0)
   })
 
   it('does not sync subtitles or generate thumbnails for deliberately removed videos', async () => {

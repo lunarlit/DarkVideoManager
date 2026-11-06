@@ -26,6 +26,7 @@ export interface Video {
   rating: number
   memo: string
   tags: string
+  performers: string
   category?: string
   createdAt: string
   updatedAt: string
@@ -266,6 +267,11 @@ export interface SearchQuery {
   q?: string
   category?: string
   tag?: string
+  performer?: string
+  /** Only videos inside this folder (any depth). */
+  folder?: string
+  /** How `rating` is compared; defaults to 'gte' (at least). */
+  ratingOp?: 'gte' | 'lte' | 'eq'
   rating?: number
   hasSubtitles?: boolean
   sortBy?:
@@ -294,6 +300,7 @@ export interface VideoMeta {
   rating?: number
   memo?: string
   tags?: string
+  performers?: string
   category?: string
   lastPlayedAt?: string
   playCount?: number
@@ -303,6 +310,19 @@ export interface VideoMeta {
 export interface VideoMetadataOptions {
   categories: string[]
   tags: string[]
+  performers: string[]
+}
+
+export interface FolderTree {
+  /** Folders registered for refresh. */
+  roots: string[]
+  /** Every folder that directly contains library videos, with that count. */
+  dirs: Array<{ path: string; count: number }>
+}
+
+export interface PerformerCount {
+  name: string
+  count: number
 }
 
 export interface CsvImportOptions {
@@ -364,6 +384,8 @@ export interface Config {
   nativePlayer?: NativePlayerInfo | null
   githubStarPromptShown?: boolean
   autoUpdateEnabled?: boolean
+  /** Words the user removed from performers; never auto-detected again. */
+  performerBlocklist?: string[]
 }
 
 export interface AppSettings {

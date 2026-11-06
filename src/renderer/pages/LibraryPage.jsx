@@ -1,35 +1,22 @@
 // Restored application logic from the packaged 0.1.0 release; vendor code is imported from npm.
 import * as React from 'react'
 import { useQuery, useMutation, useQueryClient } from '@tanstack/react-query'
-import { useNavigate, useSearchParams } from 'react-router-dom'
+import { useNavigate } from 'react-router-dom'
 import { useLibraryStore } from '../store/libraryStore'
 import { useVideos } from '../api/useVideos'
 import { useLibrarySubtitleJobs } from '../api/useLibrarySubtitleJobs'
 import { useThumbnailJobs } from '../api/useThumbnailJobs'
-import {
-  useLibraries,
-  useCreateLibrary,
-  useOpenLibrary,
-  useDeleteLibrary,
-} from '../api/useLibraries'
 import { libraryApi } from '../api'
 import VideoGrid from '../components/library/VideoGrid'
 import DetailPanel from '../components/library/DetailPanel'
-import ImportDialog, {
-  useLibraryWorkProgress,
-  WorkProgress,
-} from '../components/library/ImportDialog'
-import CsvImportDialog from '../components/library/CsvImportDialog'
+import ImportDialog, { useLibraryWorkProgress } from '../components/library/ImportDialog'
 import VideoMetadataFilters from '../components/library/VideoMetadataFilters'
 import { requestPrivacyExit } from '../components/privacy/PrivacyBoundary'
-import { folderLabel } from '../components/library/folderLabel'
 function LibraryPage() {
   const {
     activeLibraryId,
     openedLibraryId,
     selectedVideoId,
-    activateLibrary,
-    libraryTransitionPending,
     setSelectedVideoId,
     getSortPreference,
     setSortPreference,
@@ -43,13 +30,7 @@ function LibraryPage() {
     setScrollTop,
   } = useLibraryStore()
   const navigate = useNavigate()
-  const [searchParams] = useSearchParams()
-  const showManagement = !activeLibraryId || searchParams.get('manage') === '1'
   const qc2 = useQueryClient()
-  const { data: libraries = [] } = useLibraries()
-  const createLibrary = useCreateLibrary()
-  const deleteLibrary = useDeleteLibrary()
-  const openLibrary = useOpenLibrary()
   const initialSort = getSortPreference(activeLibraryId)
   const initialSearchText = getSearchText(activeLibraryId)
   const initialScrollTop = getScrollTop(activeLibraryId)
@@ -58,11 +39,6 @@ function LibraryPage() {
     !!activeLibraryId && openedLibraryId === activeLibraryId && queryLibraryId === activeLibraryId
   const subtitleJobs = useLibrarySubtitleJobs(activeLibraryId, isLibraryReady)
   const thumbnailJobs = useThumbnailJobs(activeLibraryId, isLibraryReady)
-  const visibleLibraries = [...libraries].sort((a2, b2) => {
-    const aTime = a2.lastOpenedAt ?? a2.createdAt
-    const bTime = b2.lastOpenedAt ?? b2.createdAt
-    return bTime.localeCompare(aTime)
-  })
   const [query, setQuery] = React.useState({
     ...getMetadataFilters(activeLibraryId),
     q: initialSearchText.trim() ? initialSearchText : void 0,
@@ -76,8 +52,22 @@ function LibraryPage() {
   const [searchInput, setSearchInput] = React.useState(initialSearchText)
   const [isComposingSearch, setIsComposingSearch] = React.useState(false)
   const [showImport, setShowImport] = React.useState(false)
-  const [showCsvImport, setShowCsvImport] = React.useState(false)
   const refreshWork = useLibraryWorkProgress(activeLibraryId)
+  const [detailCollapsed, setDetailCollapsedState] = React.useState(() => {
+    try {
+      return localStorage.getItem(DETAIL_COLLAPSED_KEY) === '1'
+    } catch {
+      return false
+    }
+  })
+  function setDetailCollapsed(value) {
+    setDetailCollapsedState(value)
+    try {
+      localStorage.setItem(DETAIL_COLLAPSED_KEY, value ? '1' : '0')
+    } catch {
+      /* the panel still toggles; it just won't be remembered */
+    }
+  }
   const [refreshMessage, setRefreshMessage] = React.useState(null)
   const [refreshError, setRefreshError] = React.useState(null)
   const [refreshResult, setRefreshResult] = React.useState(null)
@@ -88,6 +78,16 @@ function LibraryPage() {
     setRefreshError(null)
     setRefreshResult(null)
   }, [activeLibraryId])
+  // A finished refresh shows a one-line result that disappears on its own;
+  // results with errors stay until dismissed.
+  React.useEffect(() => {
+    if (!refreshMessage || refreshResult?.errors?.length) return
+    const timer = setTimeout(() => {
+      setRefreshMessage(null)
+      setRefreshResult(null)
+    }, 5000)
+    return () => clearTimeout(timer)
+  }, [refreshMessage, refreshResult])
   const refreshLibrary = useMutation({
     mutationFn: async (libraryId) => {
       if (!libraryId) throw new Error('Library is not selected')
@@ -156,6 +156,10 @@ function LibraryPage() {
       q: savedSearchText.trim() ? savedSearchText : void 0,
       category: getMetadataFilters(activeLibraryId).category,
       tag: getMetadataFilters(activeLibraryId).tag,
+      performer: getMetadataFilters(activeLibraryId).performer,
+      folder: getMetadataFilters(activeLibraryId).folder,
+      rating: getMetadataFilters(activeLibraryId).rating,
+      ratingOp: getMetadataFilters(activeLibraryId).ratingOp,
       sortBy: sort.sortBy,
       sortDir: sort.sortDir,
       page: 1,
@@ -274,71 +278,42 @@ function LibraryPage() {
     }
     setQuery((prev) => ({ ...prev, hasSubtitles: checked ? false : undefined, page: 1 }))
   }
+  const [isPickingRandom, setIsPickingRandom] = React.useState(false)
+  async function pickRandomVideo() {
+    if (!activeLibraryId || isPickingRandom) return
+    setIsPickingRandom(true)
+    try {
+      // Filters only: paging and sort do not affect which videos match.
+      const filters = { ...query }
+      delete filters.page
+      delete filters.pageSize
+      delete filters.sortBy
+      delete filters.sortDir
+      const res = await window.api.videos.randomId(activeLibraryId, filters)
+      if (res.ok && res.value) {
+        setSelectedVideoId(res.value)
+        setDetailCollapsed(false)
+      }
+    } finally {
+      setIsPickingRandom(false)
+    }
+  }
   function handleMetadataFiltersChange(patch) {
-    const filters = { category: query.category, tag: query.tag, ...patch }
+    const filters = {
+      category: query.category,
+      tag: query.tag,
+      performer: query.performer,
+      folder: query.folder,
+      rating: query.rating,
+      ratingOp: query.ratingOp,
+      ...patch,
+    }
     setSelectedVideoId(null)
     if (activeLibraryId) {
       setMetadataFilters(activeLibraryId, filters)
       setScrollTop(activeLibraryId, 0)
     }
     setQuery((prev) => ({ ...prev, ...filters, page: 1 }))
-  }
-  async function handleCreateLibrary() {
-    try {
-      if (libraryTransitionPending) return
-      const folderRes = await libraryApi.selectFolders()
-      if (!folderRes.ok) throw new Error(folderRes.error)
-      if (!folderRes.value) return
-      const folders = folderRes.value
-      if (!folders.length) return
-      const name =
-        folderLabel(folders[0]) + (folders.length > 1 ? ` 외 ${folders.length - 1}개 폴더` : '')
-      createLibrary.mutate(
-        {
-          name,
-          folderPath: folders,
-        },
-        {
-          onSuccess: () => {
-            navigate('/')
-          },
-          onError: (error) => {
-            window.alert(`라이브러리 생성에 실패했습니다.
-${error.message}`)
-          },
-        },
-      )
-    } catch (error) {
-      window.alert(
-        `라이브러리 폴더를 선택하지 못했습니다.\n${error instanceof Error ? error.message : String(error)}`,
-      )
-    }
-  }
-  function handleOpenLibrary(libraryId) {
-    if (libraryTransitionPending) return
-    openLibrary.mutate(libraryId, {
-      onSuccess: () => {
-        navigate('/')
-      },
-      onError: (error) => {
-        window.alert(`라이브러리를 열지 못했습니다.
-${error.message}`)
-      },
-    })
-  }
-  function handleDeleteLibrary(library) {
-    const confirmed = window.confirm(`목록에서 "${library.name}" 라이브러리를 삭제할까요?`)
-    if (!confirmed) return
-    deleteLibrary.mutate(library.id, {
-      onSuccess: () => {
-        if (library.id !== useLibraryStore.getState().activeLibraryId) return
-        activateLibrary(null)
-      },
-      onError: (error) =>
-        window.alert(
-          `라이브러리를 삭제하지 못했습니다.\n${error instanceof Error ? error.message : String(error)}`,
-        ),
-    })
   }
   function handleSearchChange(event) {
     const nextValue = event.target.value
@@ -361,109 +336,6 @@ ${error.message}`)
       q: nextValue.trim() ? nextValue : void 0,
       page: 1,
     }))
-  }
-  if (showManagement) {
-    return (
-      <div
-        className={'flex min-h-0 flex-1 items-start justify-center overflow-y-auto bg-zinc-950 p-8'}
-      >
-        <div
-          className={
-            'w-full max-w-4xl rounded-2xl border border-zinc-800 bg-zinc-900/80 p-6 shadow-2xl'
-          }
-        >
-          <div
-            className={
-              'mb-6 flex flex-col items-start justify-between gap-4 sm:flex-row sm:items-center'
-            }
-          >
-            <div className="min-w-0 flex-1">
-              <h2 className={'text-xl font-semibold text-zinc-100'}>{'라이브러리 선택'}</h2>
-              <p className={'mt-1 text-sm text-zinc-500'}>
-                {
-                  '폴더 여러 개나 드라이브 전체를 한 라이브러리로 등록할 수 있습니다. 다른 라이브러리도 재실행 없이 열 수 있습니다.'
-                }
-              </p>
-            </div>
-            <button
-              onClick={() => void handleCreateLibrary()}
-              disabled={libraryTransitionPending}
-              className={
-                'shrink-0 whitespace-nowrap rounded-lg bg-indigo-600 px-4 py-2 text-sm font-medium text-white hover:bg-indigo-500 disabled:opacity-50'
-              }
-            >
-              {'새 라이브러리'}
-            </button>
-          </div>
-          {activeLibraryId && (
-            <button onClick={() => navigate('/')} className="mb-4 text-sm text-indigo-300">
-              현재 라이브러리로 돌아가기
-            </button>
-          )}
-          {libraries.length === 0 ? (
-            <div
-              className={
-                'rounded-xl border border-dashed border-zinc-700 bg-zinc-950/50 px-6 py-12 text-center text-zinc-500'
-              }
-            >
-              {'아직 라이브러리가 없습니다. 새 라이브러리를 만들어 시작해보세요.'}
-            </div>
-          ) : (
-            <div className={'grid gap-3 md:grid-cols-2'}>
-              {visibleLibraries.map((library) => (
-                <div
-                  className={'rounded-xl border border-zinc-800 bg-zinc-950/60 p-4'}
-                  key={library.id}
-                >
-                  <p className={'truncate text-sm font-semibold text-zinc-100'}>{library.name}</p>
-                  <p className={'mt-1 truncate font-mono text-[11px] text-zinc-600'}>
-                    {library.id}
-                  </p>
-                  <ul
-                    aria-label={`${library.name} 등록 폴더`}
-                    className="mt-1 text-xs text-zinc-500"
-                  >
-                    {(library.folderPaths?.length ? library.folderPaths : [library.folderPath]).map(
-                      (folder) => (
-                        <li key={folder} className="break-all">
-                          {folder}
-                        </li>
-                      ),
-                    )}
-                  </ul>
-                  <p className={'mt-2 text-[11px] text-zinc-600'}>
-                    {'마지막 열기:'}{' '}
-                    {library.lastOpenedAt
-                      ? new Date(library.lastOpenedAt).toLocaleString()
-                      : '없음'}
-                  </p>
-                  <div className={'mt-4 flex items-center gap-2'}>
-                    <button
-                      onClick={() => handleOpenLibrary(library.id)}
-                      disabled={libraryTransitionPending}
-                      className={
-                        'rounded bg-zinc-800 px-3 py-1.5 text-xs text-zinc-100 hover:bg-zinc-700'
-                      }
-                    >
-                      {'열기'}
-                    </button>
-                    <button
-                      onClick={() => handleDeleteLibrary(library)}
-                      disabled={libraryTransitionPending || deleteLibrary.isPending}
-                      className={
-                        'rounded bg-zinc-800 px-3 py-1.5 text-xs text-zinc-400 hover:bg-zinc-700 hover:text-red-300'
-                      }
-                    >
-                      {'삭제'}
-                    </button>
-                  </div>
-                </div>
-              ))}
-            </div>
-          )}
-        </div>
-      </div>
-    )
   }
   if (!isLibraryReady) {
     return (
@@ -526,35 +398,63 @@ ${error.message}`)
             <option value={'createdAt'}>{'추가된 순'}</option>
             <option value={'playCount'}>{'많이 시청한 순'}</option>
           </select>
-          <select
-            aria-label="영상 정렬 방향"
-            value={query.sortDir ?? 'desc'}
-            onChange={(event) =>
+          <button
+            type="button"
+            aria-label={
+              (query.sortDir ?? 'desc') === 'asc'
+                ? '오름차순 정렬 (눌러서 내림차순)'
+                : '내림차순 정렬 (눌러서 오름차순)'
+            }
+            title={(query.sortDir ?? 'desc') === 'asc' ? '오름차순' : '내림차순'}
+            onClick={() =>
               setQuery((prev) => ({
                 ...prev,
-                sortDir: event.target.value,
+                sortDir: (prev.sortDir ?? 'desc') === 'asc' ? 'desc' : 'asc',
                 page: 1,
               }))
             }
             className={
-              'rounded bg-zinc-800 px-3 py-1.5 text-xs text-zinc-100 outline-hidden focus:ring-1 focus:ring-zinc-600'
+              'flex h-[30px] w-[30px] items-center justify-center rounded bg-zinc-800 text-zinc-300 hover:bg-zinc-700 hover:text-zinc-100'
             }
           >
-            <option value={'asc'}>{'오름차순'}</option>
-            <option value={'desc'}>{'내림차순'}</option>
-          </select>
-          <label className="flex cursor-pointer items-center gap-2 whitespace-nowrap rounded border border-zinc-700 bg-zinc-800 px-3 py-1.5 text-xs text-zinc-200 hover:bg-zinc-700">
-            <input
-              type="checkbox"
-              checked={query.hasSubtitles === false}
-              onChange={handleWithoutSubtitlesChange}
-              className="h-3.5 w-3.5 accent-indigo-500"
-            />
-            자막 없는 영상만
-          </label>
+            <svg
+              xmlns="http://www.w3.org/2000/svg"
+              viewBox="0 0 24 24"
+              fill="none"
+              stroke="currentColor"
+              strokeWidth={2}
+              strokeLinecap="round"
+              strokeLinejoin="round"
+              className={`h-4 w-4 transition-transform ${(query.sortDir ?? 'desc') === 'asc' ? 'rotate-180' : ''}`}
+              aria-hidden="true"
+            >
+              <path d="M12 5v14M6 13l6 6 6-6" />
+            </svg>
+          </button>
           <span className={'text-xs text-zinc-500'}>
             {isPlaceholderData ? '검색 중...' : `${data.total}개 영상`}
           </span>
+          <button
+            type="button"
+            onClick={() => void pickRandomVideo()}
+            disabled={!data.total || isPickingRandom}
+            title="지금 필터에 맞는 영상 중 하나를 무작위로 골라 상세에 보여 줍니다"
+            className="flex items-center gap-1.5 rounded border border-zinc-700 bg-zinc-800 px-3 py-1.5 text-xs text-zinc-200 hover:bg-zinc-700 disabled:opacity-40"
+          >
+            <svg
+              viewBox="0 0 24 24"
+              fill="none"
+              stroke="currentColor"
+              strokeWidth={2}
+              strokeLinecap="round"
+              strokeLinejoin="round"
+              className="h-3.5 w-3.5"
+              aria-hidden="true"
+            >
+              <path d="M16 3h5v5M4 20L21 3M21 16v5h-5M15 15l6 6M4 4l5 5" />
+            </svg>
+            랜덤 선택
+          </button>
           <button
             type="button"
             onClick={toggleRemovedItems}
@@ -579,66 +479,52 @@ ${error.message}`)
           >
             영상 파일 추가
           </button>
-          <button
-            onClick={() => setShowImport('folder')}
-            disabled={refreshLibrary.isPending}
-            className={'rounded bg-zinc-700 px-3 py-1.5 text-xs text-zinc-300 hover:bg-zinc-600'}
-          >
-            {'폴더 가져오기'}
-          </button>
-          <button
-            onClick={() => setShowCsvImport(true)}
-            disabled={refreshLibrary.isPending}
-            className={'rounded bg-zinc-700 px-3 py-1.5 text-xs text-zinc-300 hover:bg-zinc-600'}
-          >
-            {'CSV 가져오기'}
-          </button>
         </div>
         <VideoMetadataFilters
           libraryId={activeLibraryId}
           query={query}
           onChange={handleMetadataFiltersChange}
-        />
+        >
+          <label className="flex cursor-pointer items-center gap-1.5 whitespace-nowrap text-xs text-zinc-400 hover:text-zinc-200">
+            <input
+              type="checkbox"
+              checked={query.hasSubtitles === false}
+              onChange={handleWithoutSubtitlesChange}
+              className="h-3.5 w-3.5 accent-indigo-500"
+            />
+            자막 없는 영상만
+          </label>
+        </VideoMetadataFilters>
         {refreshLibrary.isPending && !isRefreshingCurrent && (
           <p role="status" className="px-4 py-2 text-xs text-zinc-400">
             다른 라이브러리의 목록 업데이트가 진행 중입니다. 해당 라이브러리로 전환하면 진행 상태를
             확인하거나 취소할 수 있습니다.
           </p>
         )}
-        <details className="border-b border-zinc-800 px-4 py-2 text-xs text-zinc-400">
-          <summary className="w-fit cursor-pointer text-zinc-300">영상 추가·폴더 갱신 안내</summary>
-          <div className="mt-2 space-y-1 leading-relaxed">
-            <p>영상 한 개만 추가하려면 영상 파일 추가를 누르세요. 선택한 파일만 처리합니다.</p>
-            <p>
-              폴더 가져오기는 폴더와 하위 폴더를 갱신 대상으로 등록합니다. 새 파일이 생기면 목록
-              업데이트를 눌러 수동 반영하세요. 폴더 자동 감시는 지원하지 않습니다.
+        {isRefreshingCurrent && <CompactWorkProgress work={refreshWork} />}
+        {!isRefreshingCurrent && (refreshMessage || refreshResult) && (
+          <div className="flex items-center gap-2 border-b border-zinc-800 px-4 py-1.5 text-xs">
+            <p role="status" className="min-w-0 flex-1 truncate text-indigo-200">
+              {refreshMessage}
+              {refreshResult && (
+                <span className="ml-2 text-zinc-400">
+                  추가 {refreshResult.added} · 기존 {refreshResult.skipped} · 제거{' '}
+                  {refreshResult.removed} · 오류 {refreshResult.errors.length}
+                </span>
+              )}
             </p>
-            <p>
-              목록 업데이트는 등록 폴더를 검색하여 새 영상을 추가하고 사라진 영상을 제거한 항목으로
-              옮깁니다. 기존 영상의 정보와 썸네일은 다시 만들지 않습니다. 썸네일이 없는 영상은
-              생성을 다시 시도합니다.
-            </p>
-            <p>
-              파일 추가로만 등록한 영상의 폴더는 갱신 대상으로 추가되지 않습니다. 진행 단계와 완료
-              후 추가·기존·제거·오류 수를 아래에서 확인할 수 있습니다.
-            </p>
+            <button
+              type="button"
+              aria-label="결과 닫기"
+              onClick={() => {
+                setRefreshMessage(null)
+                setRefreshResult(null)
+              }}
+              className="shrink-0 px-1 text-zinc-500 hover:text-zinc-200"
+            >
+              ✕
+            </button>
           </div>
-        </details>
-        {refreshWork.progress && (
-          <div className="px-4">
-            <WorkProgress work={refreshWork} isWorking={isRefreshingCurrent} />
-          </div>
-        )}
-        {refreshMessage && (
-          <p role="status" className="px-4 py-2 text-xs text-indigo-200">
-            {refreshMessage}
-          </p>
-        )}
-        {refreshResult && (
-          <p className="px-4 pb-2 text-xs text-zinc-400">
-            추가 {refreshResult.added}개 · 기존 {refreshResult.skipped}개 · 제거{' '}
-            {refreshResult.removed}개 · 오류 {refreshResult.errors.length}개
-          </p>
         )}
         {refreshResult?.errors.length > 0 && (
           <ul
@@ -701,6 +587,10 @@ ${error.message}`)
               query.hasSubtitles === false,
               query.category,
               query.tag,
+              query.performer,
+              query.folder,
+              query.rating,
+              query.ratingOp,
             ])}
             videos={data.videos.filter(
               (video) =>
@@ -728,28 +618,56 @@ ${error.message}`)
           </button>
         )}
       </div>
-      <aside className={'w-80 shrink-0 border-l border-zinc-800 bg-zinc-900'}>
-        {selectedVideo ? (
-          <DetailPanel
-            key={selectedVideo.id}
-            video={selectedVideo}
-            libraryId={activeLibraryId}
-            thumbnailJobs={thumbnailJobs}
-            onClose={() => setSelectedVideoId(null)}
-            onVideoDeleted={() => setSelectedVideoId(null)}
-            onVideoRestored={() => setSelectedVideoId(null)}
-            showCloseButton={false}
-          />
-        ) : (
-          <div
-            className={
-              'flex h-full items-center justify-center px-6 text-center text-sm text-zinc-500'
-            }
+      {detailCollapsed ? (
+        <aside
+          className={
+            'flex w-9 shrink-0 flex-col items-center border-l border-zinc-800 bg-zinc-900 pt-2'
+          }
+        >
+          <button
+            type="button"
+            aria-label="상세 패널 펼치기"
+            title="상세 패널 펼치기"
+            onClick={() => setDetailCollapsed(false)}
+            className="flex h-7 w-7 items-center justify-center rounded text-zinc-400 hover:bg-zinc-800 hover:text-zinc-100"
           >
-            {'영상을 선택하면 오른쪽에 상세 정보가 표시됩니다.'}
-          </div>
-        )}
-      </aside>
+            <PanelChevron direction="left" />
+          </button>
+        </aside>
+      ) : (
+        <aside className={'relative w-80 shrink-0 border-l border-zinc-800 bg-zinc-900'}>
+          <button
+            type="button"
+            aria-label="상세 패널 접기"
+            title="상세 패널 접기"
+            onClick={() => setDetailCollapsed(true)}
+            className="absolute -left-3 top-1/2 z-10 flex h-6 w-6 -translate-y-1/2 items-center justify-center rounded-full border border-zinc-700 bg-zinc-900 text-zinc-400 shadow hover:bg-zinc-800 hover:text-zinc-100"
+          >
+            <PanelChevron direction="right" />
+          </button>
+          {selectedVideo ? (
+            <DetailPanel
+              key={selectedVideo.id}
+              video={selectedVideo}
+              libraryId={activeLibraryId}
+              thumbnailJobs={thumbnailJobs}
+              onClose={() => setSelectedVideoId(null)}
+              onVideoDeleted={() => setSelectedVideoId(null)}
+              onVideoRestored={() => setSelectedVideoId(null)}
+              showCloseButton={false}
+            onPlay={() => handleVideoDoubleClick(selectedVideo)}
+            />
+          ) : (
+            <div
+              className={
+                'flex h-full items-center justify-center px-6 text-center text-sm text-zinc-500'
+              }
+            >
+              {'영상을 선택하면 오른쪽에 상세 정보가 표시됩니다.'}
+            </div>
+          )}
+        </aside>
+      )}
       {showImport && (
         <ImportDialog
           libraryId={activeLibraryId}
@@ -758,10 +676,79 @@ ${error.message}`)
           onClose={() => setShowImport(false)}
         />
       )}
-      {showCsvImport && (
-        <CsvImportDialog libraryId={activeLibraryId} onClose={() => setShowCsvImport(false)} />
-      )}
     </div>
   )
 }
 export default LibraryPage
+
+const REFRESH_PHASE_NAMES = {
+  preparing: '준비 중',
+  scanning: '파일 검색 중',
+  probing: '영상 정보 분석 중',
+  thumbnails: '썸네일 생성 중',
+  applying: '변경 적용 중',
+  done: '마무리 중',
+  cancelled: '취소 정리 중',
+}
+function CompactWorkProgress({ work }) {
+  const { progress, isCancelling, cancelError } = work
+  const total = progress?.total ?? 0
+  const current = progress?.current ?? 0
+  const percent = total > 0 ? Math.min(100, Math.max(0, Math.round((current / total) * 100))) : 0
+  const label = isCancelling ? '취소 요청 중' : (REFRESH_PHASE_NAMES[progress?.phase] ?? '진행 중')
+  return (
+    <div className="flex h-8 shrink-0 items-center gap-3 border-b border-zinc-800 px-4 text-xs">
+      <span role="status" className="shrink-0 text-indigo-200">
+        목록 업데이트 · {label}
+      </span>
+      <div
+        role="progressbar"
+        aria-label="목록 업데이트 진행률"
+        aria-valuemin={0}
+        aria-valuemax={100}
+        aria-valuenow={total > 0 ? percent : undefined}
+        className="h-1.5 min-w-16 flex-1 overflow-hidden rounded-full bg-zinc-800"
+      >
+        <div
+          className={`h-full bg-indigo-500 transition-all ${total > 0 ? '' : 'w-1/3 motion-safe:animate-pulse'}`}
+          style={total > 0 ? { width: `${percent}%` } : undefined}
+        />
+      </div>
+      <span className="shrink-0 tabular-nums text-zinc-400">
+        {total > 0 ? `${current} / ${total}` : ''}
+      </span>
+      {cancelError && (
+        <span role="alert" className="max-w-48 truncate text-amber-300" title={cancelError}>
+          {cancelError}
+        </span>
+      )}
+      <button
+        type="button"
+        onClick={() => void work.cancel()}
+        disabled={isCancelling}
+        className="shrink-0 text-zinc-400 underline hover:text-zinc-100 disabled:opacity-50"
+      >
+        취소
+      </button>
+    </div>
+  )
+}
+
+const DETAIL_COLLAPSED_KEY = 'dvm:detail-panel-collapsed'
+function PanelChevron({ direction }) {
+  return (
+    <svg
+      xmlns="http://www.w3.org/2000/svg"
+      viewBox="0 0 24 24"
+      fill="none"
+      stroke="currentColor"
+      strokeWidth={2}
+      strokeLinecap="round"
+      strokeLinejoin="round"
+      className="h-4 w-4"
+      aria-hidden="true"
+    >
+      <path d={direction === 'left' ? 'M15 18l-6-6 6-6' : 'M9 18l6-6-6-6'} />
+    </svg>
+  )
+}

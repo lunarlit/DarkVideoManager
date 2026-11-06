@@ -1,12 +1,19 @@
 import { randomUUID } from 'crypto'
 import { basename, dirname, extname, join, resolve, relative, isAbsolute } from 'path'
-import { stat, lstat, readdir } from 'node:fs/promises'
+import { stat, lstat, readdir, writeFile } from 'node:fs/promises'
 import { statSync } from 'node:fs'
 import type { Database } from 'better-sqlite3'
-import { BrowserWindow } from 'electron'
-import { Library, ImportProgress, ImportResult, ProbeData } from '@shared/types'
+import { BrowserWindow, shell } from 'electron'
+import {
+  FolderTree,
+  Library,
+  ImportProgress,
+  ImportResult,
+  ProbeData,
+  VideoMeta,
+} from '@shared/types'
 import { loadConfig, saveConfig, updateConfig } from '../infra/config'
-import { getLibDbPath } from '../infra/paths'
+import { getLibDbPath, getThumbnailsDir } from '../infra/paths'
 import { openDatabase, closeDatabase, getDatabase } from '../db/connection'
 import { runMigrations } from '../db/migrator'
 import { VideoRepository } from '../db/repositories/VideoRepository'
@@ -29,12 +36,25 @@ import {
   yieldLibraryWork,
 } from './LibraryWorkService'
 import { probeVideo } from '../ffmpeg/ffprobe'
-import { generateThumbnails } from '../ffmpeg/thumbnail'
 import { isAbortError } from '../ffmpeg/queue'
-import { clearThumbnailJobHistory, runThumbnailJob } from './ThumbnailJobService'
+import { clearThumbnailJobHistory } from './ThumbnailJobService'
 import { IPC } from '@shared/ipc'
 import { createLogger } from '../infra/logger'
 import { isVideoFile } from '../infra/fs'
+import { serializeVideoTags, serializeVideoPerformers } from '@shared/videoMetadata'
+import {
+  ratingFromPath,
+  hashtagsFromName,
+  matchKnownTags,
+  stashSceneForFile,
+  koreanPerformersFromName,
+  normalizePerformerKey,
+  userBlockedPerformers,
+  leadingKoreanNames,
+  isStashEnabled,
+  type StashScene,
+} from './AutoTagService'
+import { getStashMetadataService } from './StashMetadataService'
 
 const log = createLogger('LibraryService')
 
@@ -106,6 +126,54 @@ export function createLibrary(name: string, folders: string | string[]): Library
 
   log.info({ id, name, folderPath }, '라이브러리 생성')
   return lib
+}
+
+/**
+ * Create a library with no registered folders yet. Used by the single-library
+ * bootstrap so the app can start with an empty library the user fills by
+ * importing folders. Unlike createLibrary, this does not require a folder up front.
+ */
+export function createEmptyLibrary(name: string): Library {
+  saveConfig(loadConfig())
+  const id = randomUUID()
+  const dbPath = getLibDbPath(id)
+  const lib: Library = {
+    id,
+    name,
+    dbPath,
+    folderPath: '',
+    folderPaths: [],
+    createdAt: new Date().toISOString(),
+  }
+  try {
+    const db = openDatabase(id, dbPath)
+    runMigrations(db, dbPath)
+    updateConfig((c) => ({
+      ...c,
+      libraries: [...c.libraries, lib],
+      lastActiveLibraryId: id,
+    }))
+  } catch (error) {
+    closeDatabase(id)
+    throw error
+  }
+  log.info({ id, name }, '기본 라이브러리 생성')
+  return lib
+}
+
+/**
+ * Guarantee exactly one usable library exists. The app runs as a single library:
+ * if the user already has libraries, the most recently active one is kept as the
+ * single library; otherwise an empty default library is created. Returns it.
+ */
+export function ensureSingleLibrary(): Library {
+  const config = loadConfig()
+  if (config.libraries.length > 0)
+    return (
+      config.libraries.find((entry) => entry.id === config.lastActiveLibraryId) ??
+      config.libraries[0]
+    )
+  return createEmptyLibrary('내 라이브러리')
 }
 
 function stopPreviousLibraryPlayback(): void {
@@ -243,6 +311,7 @@ async function scanFolders(
 }
 
 async function importScannedFiles(
+  libraryId: string,
   db: Database,
   files: string[],
   sidecars: Sidecars,
@@ -251,7 +320,58 @@ async function importScannedFiles(
   emit: ProgressEmitter,
 ): Promise<void> {
   const repository = new VideoRepository(db)
+  const thumbnails = new ThumbnailRepository(db)
   const cooperate = createYieldBudget(signal)
+  // Snapshot the existing tag vocabulary once so filename words can be matched
+  // against tags that already exist in the library.
+  const knownTags = repository.metadataOptions(false).tags
+  const stashEnabled = isStashEnabled()
+  const stashCache = new Map<string, StashScene | null>()
+  // Tags come from the file name only (hashtags + already-known tags).
+  const deriveTags = (fileName: string): string[] => [
+    ...hashtagsFromName(fileName),
+    ...matchKnownTags(fileName, knownTags),
+  ]
+  const lookupScene = (fileName: string): Promise<StashScene | null> =>
+    stashEnabled ? stashSceneForFile(fileName, stashCache) : Promise.resolve(null)
+  // Build a dictionary of real performer names so we can still tag films that Stash
+  // did not match (R18 rate-limits bulk identify, leaving many major-label scenes
+  // without performers even though the name is in the file name). A name is trusted
+  // when Stash confirmed it on some scene, or when it leads ≥2 file names (an
+  // actress recurs across releases; a one-off description phrase does not).
+  const knownPerformers = new Set<string>()
+  if (stashEnabled) {
+    try {
+      for (const entry of await getStashMetadataService().listPerformerSceneFiles())
+        for (const name of koreanPerformersFromName(entry.basename, entry.count))
+          knownPerformers.add(name.toLowerCase())
+    } catch (error) {
+      log.warn({ err: error }, '배우 사전 구성 실패')
+    }
+  }
+  const leadingFrequency = new Map<string, number>()
+  for (const filePath of files)
+    for (const name of leadingKoreanNames(basename(filePath))) {
+      const key = name.toLowerCase()
+      leadingFrequency.set(key, (leadingFrequency.get(key) ?? 0) + 1)
+    }
+  const isLikelyPerformer = (name: string): boolean => {
+    const key = name.toLowerCase()
+    return knownPerformers.has(key) || (leadingFrequency.get(key) ?? 0) >= 2
+  }
+  // Performers are a separate field. When Stash matched the scene, its performer
+  // count decides how many leading names to take; otherwise fall back to leading
+  // file-name names that the dictionary confirms are real performers.
+  const blockedPerformers = userBlockedPerformers()
+  const notBlocked = (name: string) => !blockedPerformers.has(normalizePerformerKey(name))
+  const derivePerformers = (fileName: string, scene: StashScene | null): string[] => {
+    if (scene && scene.people.length > 0) {
+      const names = koreanPerformersFromName(fileName, scene.people.length).filter(notBlocked)
+      for (const name of names) knownPerformers.add(name.toLowerCase())
+      return names
+    }
+    return leadingKoreanNames(fileName).filter(isLikelyPerformer).filter(notBlocked)
+  }
   for (const [index, filePath] of files.entries()) {
     await cooperate()
     emit({
@@ -266,7 +386,7 @@ async function importScannedFiles(
       const existing = repository.findByPath(filePath)
       if (existing) {
         // A refresh must not restore a deliberately removed video or mutate its subtitles.
-        if (!existing.removalMode)
+        if (!existing.removalMode) {
           db.transaction(() =>
             syncSidecarSubtitleSnapshot(
               db,
@@ -274,6 +394,38 @@ async function importScannedFiles(
               sidecars.get(subtitleVideoKey(filePath)) ?? [],
             ),
           )()
+          // Re-scan: merge newly derived tags and performers into the existing ones.
+          // Ratings and other manual edits are left untouched.
+          const fileName = basename(filePath)
+          const patch: VideoMeta = {}
+          const derivedTags = deriveTags(fileName)
+          if (derivedTags.length) {
+            const mergedTags = serializeVideoTags([existing.tags, ...derivedTags].join(', '))
+            if (mergedTags !== serializeVideoTags(existing.tags)) patch.tags = mergedTags
+          }
+          const scene = await lookupScene(fileName)
+          const derivedPerformers = derivePerformers(fileName, scene)
+          if (derivedPerformers.length) {
+            const mergedPerformers = serializeVideoPerformers(
+              [existing.performers, ...derivedPerformers].join(', '),
+            )
+            if (mergedPerformers !== serializeVideoPerformers(existing.performers))
+              patch.performers = mergedPerformers
+          }
+          if (patch.tags !== undefined || patch.performers !== undefined)
+            repository.updateMeta(existing.id, patch)
+          // Fill in media info that an earlier import could not read (e.g. ffprobe
+          // was unavailable at the time).
+          if (!existing.durationSec) {
+            try {
+              const probeData = await probeVideo(filePath, signal)
+              if (Object.keys(probeData).length) repository.updateProbeData(existing.id, probeData)
+            } catch (error) {
+              if (isAbortError(error) || signal.aborted) throw error
+              log.warn({ filePath, err: error }, 'ffprobe 재시도 실패')
+            }
+          }
+        }
         result.skipped++
         continue
       }
@@ -287,18 +439,48 @@ async function importScannedFiles(
         log.warn({ filePath, err: error }, 'ffprobe 실패, 메타 없이 저장')
       }
       throwIfWorkCancelled(signal)
+      const fileName = basename(filePath)
+      const scene = await lookupScene(fileName)
+      const tags = serializeVideoTags(deriveTags(fileName).join(', '))
+      const performers = serializeVideoPerformers(derivePerformers(fileName, scene).join(', '))
+      const rating = ratingFromPath(filePath) ?? 0
       const videoId = randomUUID()
+      // Fetch the Stash cover ("표지") before the write so the file is on disk first.
+      let coverPath: string | null = null
+      if (scene) {
+        const cover = await getStashMetadataService().fetchSceneCover(scene.id)
+        if (cover) {
+          const target = join(getThumbnailsDir(libraryId), `${videoId}_stash_cover.jpg`)
+          try {
+            await writeFile(target, cover)
+            coverPath = target
+          } catch (error) {
+            log.warn({ videoId, err: error }, 'Stash 표지 저장 실패')
+          }
+        }
+      }
+      throwIfWorkCancelled(signal)
       db.transaction(() => {
         repository.insert({
           id: videoId,
           filePath,
-          fileName: basename(filePath),
+          fileName,
           sizeBytes: info.size,
-          rating: 0,
+          rating,
           memo: '',
           resumePosSec: 0,
+          tags,
+          performers,
           ...probeData,
         })
+        if (coverPath)
+          thumbnails.insert({
+            id: randomUUID(),
+            videoId,
+            filePath: coverPath,
+            timeSec: 0,
+            isPrimary: true,
+          })
         syncSidecarSubtitleSnapshot(db, videoId, sidecars.get(subtitleVideoKey(filePath)) ?? [])
       })()
       result.added++
@@ -308,100 +490,6 @@ async function importScannedFiles(
       log.warn({ filePath, err: error }, '가져오기 오류')
     }
   }
-}
-
-async function generateLibraryThumbnails(
-  libraryId: string,
-  files: string[],
-  db: Database,
-  win: BrowserWindow,
-  signal: AbortSignal,
-  result: ImportResult,
-  emit: ProgressEmitter,
-): Promise<void> {
-  const repository = new VideoRepository(db)
-  const thumbnails = new ThumbnailRepository(db)
-  clearThumbnailJobHistory(libraryId)
-  let next = 0,
-    completed = 0
-  emit({ phase: 'thumbnails', total: files.length, current: 0, errors: result.errors })
-  const worker = async () => {
-    const cooperate = createYieldBudget(signal)
-    while (next < files.length) {
-      await cooperate()
-      if (next >= files.length) return
-      const filePath = files[next++]
-      try {
-        throwIfWorkCancelled(signal)
-        const video = repository.findByPath(filePath)
-        if (video && !video.removalMode && !thumbnails.findByVideoId(video.id).length)
-          await runThumbnailJob(
-            {
-              libraryId,
-              videoId: video.id,
-              fileName: video.fileName,
-              total: 5,
-              signal,
-            },
-            async (work) => {
-              emit({
-                phase: 'thumbnails',
-                total: files.length,
-                current: completed,
-                currentFile: video.fileName,
-                errors: result.errors,
-              })
-              const captures = await generateThumbnails(
-                filePath,
-                work.outputDir,
-                video.id,
-                video.durationSec,
-                work.signal,
-                work.reportProgress,
-              )
-              throwIfWorkCancelled(work.signal)
-              if (!captures.length) throw new Error('동영상에서 썸네일을 추출하지 못했습니다.')
-              if (repository.findById(video.id)?.removalMode) return
-              db.transaction(() => {
-                for (const [index, capture] of captures.entries())
-                  thumbnails.insert({
-                    id: randomUUID(),
-                    videoId: video.id,
-                    filePath: capture.filePath,
-                    timeSec: capture.timeSec,
-                    isPrimary: index === Math.floor(captures.length / 2),
-                  })
-              })()
-              work.committed = true
-              if (!win.isDestroyed() && !win.webContents.isDestroyed())
-                win.webContents.send(IPC.EVENTS.THUMBNAIL_READY, { videoId: video.id })
-            },
-          )
-      } catch (error) {
-        if (signal.aborted) throw error
-        // A per-video cancellation skips this video while the import continues.
-        if (!isAbortError(error)) {
-          result.errors.push(basename(filePath) + ': ' + (error as Error).message)
-          log.warn({ filePath, err: error }, '썸네일 생성 실패')
-        }
-      }
-      completed++
-      emit({
-        phase: 'thumbnails',
-        total: files.length,
-        current: completed,
-        currentFile: basename(filePath),
-        errors: result.errors,
-      })
-    }
-  }
-  // Only two tasks per library are queued at once. Wait for both workers to settle
-  // so no thumbnail process can mutate the library after cancellation completes.
-  const outcomes = await Promise.allSettled(
-    Array.from({ length: Math.min(2, files.length) }, worker),
-  )
-  throwIfWorkCancelled(signal)
-  for (const outcome of outcomes) if (outcome.status === 'rejected') throw outcome.reason
 }
 
 async function markMissingVideos(
@@ -458,7 +546,9 @@ async function runFolderWork(
   const library = loadConfig().libraries.find((entry) => entry.id === libraryId)
   if (!library) throw new Error('라이브러리를 찾을 수 없습니다')
   const roots = uniqueRoots(
-    requestedFolders ?? [library.folderPath, ...(library.folderPaths ?? [])],
+    (requestedFolders ?? [library.folderPath, ...(library.folderPaths ?? [])]).filter((folder) =>
+      Boolean(folder && folder.trim()),
+    ),
   )
   const emit = createEmitter(libraryId, win)
   const result: ImportResult = { added: 0, skipped: 0, removed: 0, errors: [] }
@@ -478,21 +568,22 @@ async function runFolderWork(
     if (requestedFolders)
       updateConfig((config) => ({
         ...config,
-        libraries: config.libraries.map((entry) =>
-          entry.id === libraryId
-            ? {
-                ...entry,
-                folderPaths: uniqueRoots([
-                  entry.folderPath,
-                  ...(entry.folderPaths ?? []),
-                  ...requestedFolders,
-                ]),
-              }
-            : entry,
-        ),
+        libraries: config.libraries.map((entry) => {
+          if (entry.id !== libraryId) return entry
+          const folderPaths = uniqueRoots(
+            [entry.folderPath, ...(entry.folderPaths ?? []), ...requestedFolders].filter((folder) =>
+              Boolean(folder && folder.trim()),
+            ),
+          )
+          return {
+            ...entry,
+            // A library bootstrapped without folders adopts the first imported root.
+            folderPath: entry.folderPath?.trim() ? entry.folderPath : (folderPaths[0] ?? ''),
+            folderPaths,
+          }
+        }),
       }))
-    await importScannedFiles(db, files, snapshot.sidecars, signal, result, emit)
-    await generateLibraryThumbnails(libraryId, files, db, win, signal, result, emit)
+    await importScannedFiles(libraryId, db, files, snapshot.sidecars, signal, result, emit)
     throwIfWorkCancelled(signal)
     if (!requestedFolders) await markMissingVideos(db, roots, files, signal, result)
     emit({ phase: 'done', total: files.length, current: files.length, errors: result.errors })
@@ -600,8 +691,7 @@ export function importFiles(
         }
         await yieldLibraryWork(signal)
       }
-      await importScannedFiles(db, files, sidecars, signal, result, emit)
-      await generateLibraryThumbnails(libraryId, files, db, win, signal, result, emit)
+      await importScannedFiles(libraryId, db, files, sidecars, signal, result, emit)
       throwIfWorkCancelled(signal)
       emit({ phase: 'done', total: files.length, current: files.length, errors: result.errors })
       return result
@@ -617,4 +707,40 @@ export function importFiles(
       return result
     }
   })
+}
+
+function libraryRoots(libraryId: string): string[] {
+  const library = listLibraries().find((entry) => entry.id === libraryId)
+  if (!library) throw new Error('라이브러리를 찾을 수 없습니다')
+  return uniqueRoots([library.folderPath, ...(library.folderPaths ?? [])].filter(Boolean))
+}
+
+/** Registered folders plus every folder holding library videos (with counts). */
+export function getFolderTree(libraryId: string): FolderTree {
+  const db = getDatabase(libraryId)
+  if (!db) throw new Error('라이브러리가 열려 있지 않습니다')
+  const counts = new Map<string, { path: string; count: number }>()
+  const rows = db
+    .prepare('SELECT file_path FROM videos WHERE removal_mode IS NULL')
+    .all() as Array<{ file_path: string }>
+  for (const row of rows) {
+    const dir = dirname(row.file_path)
+    const key = pathKey(dir)
+    const entry = counts.get(key)
+    if (entry) entry.count++
+    else counts.set(key, { path: dir, count: 1 })
+  }
+  return { roots: libraryRoots(libraryId), dirs: [...counts.values()] }
+}
+
+/** Open a library folder in Explorer. Only registered folders, their
+ *  subfolders, and folders that hold library videos may be opened. */
+export async function openLibraryFolder(libraryId: string, folder: string): Promise<void> {
+  const target = resolve(folder)
+  const allowed =
+    libraryRoots(libraryId).some((root) => insideFolder(target, root)) ||
+    getFolderTree(libraryId).dirs.some((dir) => pathKey(dir.path) === pathKey(target))
+  if (!allowed) throw new Error('라이브러리에 등록된 폴더가 아닙니다')
+  const message = await shell.openPath(target)
+  if (message) throw new Error(message)
 }

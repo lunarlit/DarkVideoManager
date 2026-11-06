@@ -292,3 +292,40 @@ describe('thumbnail and native mutation work isolation', () => {
     expect(existsSync(existingPath)).toBe(true)
   })
 })
+
+describe('thumbnail regeneration and pruning', () => {
+  function fakeGenerate(count: number) {
+    state.generate.mockImplementation(async (_path: string, outputDir: string) =>
+      Array.from({ length: count }, (_, index) => {
+        const filePath = join(outputDir, `new_${index}.jpg`)
+        writeFileSync(filePath, 'new image')
+        return { filePath, timeSec: 10 + index }
+      }),
+    )
+  }
+
+  it('replaces generated candidates and deletes their files but keeps a primary Stash cover', async () => {
+    const coverPath = join(getThumbnailsDir(libraryId), `${videoId}_stash_cover.jpg`)
+    writeFileSync(coverPath, 'cover image')
+    thumbnailRepo.insert({ id: 'cover', videoId, filePath: coverPath, timeSec: 0, isPrimary: true })
+    fakeGenerate(3)
+    await ensureThumbnailForVideo(libraryId, videoId, webContents, true)
+    const after = thumbnailRepo.findByVideoId(videoId)
+    expect(after.map((item) => item.id)).not.toContain('existing')
+    expect(existsSync(existingPath)).toBe(false)
+    expect(after.filter((item) => item.isPrimary)).toMatchObject([{ id: 'cover' }])
+    expect(existsSync(coverPath)).toBe(true)
+    expect(after).toHaveLength(4)
+  })
+
+  it('prunes every candidate except the primary, rows and files', async () => {
+    const { pruneThumbnails } = await import('./ThumbnailService')
+    const extraPath = join(getThumbnailsDir(libraryId), 'extra.jpg')
+    writeFileSync(extraPath, 'extra image')
+    thumbnailRepo.insert({ id: 'extra', videoId, filePath: extraPath, timeSec: 5, isPrimary: false })
+    expect(await pruneThumbnails(libraryId, videoId)).toBe(1)
+    expect(thumbnailRepo.findByVideoId(videoId)).toMatchObject([{ id: 'existing', isPrimary: true }])
+    expect(existsSync(extraPath)).toBe(false)
+    expect(existsSync(existingPath)).toBe(true)
+  })
+})

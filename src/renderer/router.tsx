@@ -6,6 +6,8 @@ import StatsPage from './pages/StatsPage'
 import SubtitleQueuePage from './pages/SubtitleQueuePage'
 import DiscoveryPage from './pages/DiscoveryPage'
 import LibraryMaintenancePage from './pages/LibraryMaintenancePage'
+import PerformersPage from './pages/PerformersPage'
+import FoldersPage from './pages/FoldersPage'
 
 const router = createHashRouter([
   {
@@ -16,6 +18,14 @@ const router = createHashRouter([
       {
         index: true,
         element: <LibraryPage />,
+      },
+      {
+        path: 'performers',
+        element: <PerformersPage />,
+      },
+      {
+        path: 'folders',
+        element: <FoldersPage />,
       },
       {
         path: 'stats',

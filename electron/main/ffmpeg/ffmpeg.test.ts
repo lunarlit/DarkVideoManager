@@ -61,7 +61,7 @@ describe('FFmpeg pipeline', () => {
     expect(await ensurePlaybackProxy(aviPath, outputDirectory, 'legacy')).toBe(firstPath)
   }, 30_000)
 
-  it('generates five percentage thumbnails and reports progress', async () => {
+  it('generates eight randomized thumbnails and reports progress', async () => {
     const outputDirectory = `${temporaryDirectory}/thumbs`
     const progress: Array<[number, number]> = []
     const results = await generateThumbnails(
@@ -75,24 +75,14 @@ describe('FFmpeg pipeline', () => {
       },
     )
 
-    expect(results).toHaveLength(5)
-    expect(readdirSync(outputDirectory).sort()).toEqual([
-      'video-1_0.jpg',
-      'video-1_1.jpg',
-      'video-1_2.jpg',
-      'video-1_3.jpg',
-      'video-1_4.jpg',
-    ])
-    expect(progress).toEqual([
-      [1, 5],
-      [2, 5],
-      [3, 5],
-      [4, 5],
-      [5, 5],
-    ])
+    expect(results).toHaveLength(8)
+    expect(readdirSync(outputDirectory).sort()).toEqual(
+      Array.from({ length: 8 }, (_, index) => `video-1_${index}.jpg`),
+    )
+    expect(progress).toEqual(Array.from({ length: 8 }, (_, index) => [index + 1, 8]))
   }, 30_000)
 
-  it('decodes AV1 in software and generates five thumbnails with the shipped runtime', async () => {
+  it('decodes AV1 in software and generates thumbnails with the shipped runtime', async () => {
     // Original synthetic 64x64 blue clip: libaom-av1, 5 fps, 2 seconds, IVF.
     // Embedded so CI does not need an AV1 encoder or a downloaded video fixture.
     const av1 = Buffer.from(
@@ -102,7 +92,7 @@ describe('FFmpeg pipeline', () => {
     const av1Path = `${temporaryDirectory}/synthetic-av1.ivf`
     writeFileSync(av1Path, av1)
     const results = await generateThumbnails(av1Path, `${temporaryDirectory}/av1`, 'av1', 2)
-    expect(results).toHaveLength(5)
+    expect(results).toHaveLength(8)
     expect(await probeVideo(results[0].filePath)).toMatchObject({
       codec: 'mjpeg',
       width: 480,

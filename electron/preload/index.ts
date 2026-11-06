@@ -18,6 +18,8 @@ import type {
   SearchResult,
   VideoMeta,
   VideoMetadataOptions,
+  PerformerCount,
+  FolderTree,
   ImportResult,
   ImportProgress,
   LibraryStats,
@@ -204,6 +206,10 @@ const api = {
       ipcRenderer.invoke(IPC.LIBRARY.REFRESH, libraryId),
     cancelWork: (libraryId: string): Promise<Result<boolean, string>> =>
       ipcRenderer.invoke(IPC.LIBRARY.CANCEL_WORK, libraryId),
+    folderTree: (libraryId: string): Promise<Result<FolderTree, string>> =>
+      ipcRenderer.invoke(IPC.LIBRARY.FOLDER_TREE, libraryId),
+    openFolder: (libraryId: string, folder: string): Promise<Result<null, string>> =>
+      ipcRenderer.invoke(IPC.LIBRARY.OPEN_FOLDER, libraryId, folder),
   },
   videos: {
     metadataOptions: (
@@ -211,6 +217,24 @@ const api = {
       removed = false,
     ): Promise<Result<VideoMetadataOptions, string>> =>
       ipcRenderer.invoke(IPC.VIDEOS.METADATA_OPTIONS, libraryId, removed),
+    performerCounts: (
+      libraryId: string,
+      removed = false,
+    ): Promise<Result<PerformerCount[], string>> =>
+      ipcRenderer.invoke(IPC.VIDEOS.PERFORMER_COUNTS, libraryId, removed),
+    randomId: (libraryId: string, query: SearchQuery): Promise<Result<string | null, string>> =>
+      ipcRenderer.invoke(IPC.VIDEOS.RANDOM_ID, libraryId, query),
+    deletePerformer: (libraryId: string, name: string): Promise<Result<number, string>> =>
+      ipcRenderer.invoke(IPC.VIDEOS.DELETE_PERFORMER, libraryId, name),
+    setFolderCategory: (
+      libraryId: string,
+      folder: string,
+      category: string,
+    ): Promise<Result<number, string>> =>
+      ipcRenderer.invoke(IPC.VIDEOS.SET_FOLDER_CATEGORY, libraryId, folder, category),
+    performerPhoto: (name: string): Promise<Result<string | null, string>> =>
+      ipcRenderer.invoke(IPC.VIDEOS.PERFORMER_PHOTO, name),
+    avdbsLogin: (): Promise<Result<boolean, string>> => ipcRenderer.invoke(IPC.VIDEOS.AVDBS_LOGIN),
     search: (libraryId: string, query: SearchQuery): Promise<Result<SearchResult, string>> =>
       ipcRenderer.invoke(IPC.VIDEOS.SEARCH, libraryId, query),
     get: (libraryId: string, videoId: string): Promise<Result<Video | null, string>> =>
@@ -248,7 +272,7 @@ const api = {
     delete: (
       libraryId: string,
       videoId: string,
-      mode?: 'trash' | 'remove',
+      mode?: 'trash' | 'remove' | 'delete',
     ): Promise<Result<null, string>> =>
       ipcRenderer.invoke(IPC.VIDEOS.DELETE, libraryId, videoId, mode),
     restore: (libraryId: string, videoId: string): Promise<Result<null, string>> =>
@@ -293,6 +317,8 @@ const api = {
       videoId: string,
     ): Promise<Result<null, string>> =>
       ipcRenderer.invoke(IPC.THUMBNAILS.SET_PRIMARY, libraryId, thumbnailId, videoId),
+    pruneForVideo: (libraryId: string, videoId: string): Promise<Result<number, string>> =>
+      ipcRenderer.invoke(IPC.THUMBNAILS.PRUNE_FOR_VIDEO, libraryId, videoId),
     ensureForVideo: (
       libraryId: string,
       videoId: string,
