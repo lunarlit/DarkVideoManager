@@ -333,6 +333,33 @@ it('seeks by percentage on digits and keypad digits without changing pause or mo
   `)
 })
 
+it('toggles fullscreen with Enter and leaves fullscreen on Esc before quitting', async () => {
+  await runSeekScript(`
+    local fullscreen, quits = false, 0
+    mp.get_property_native = function(name, default)
+      if name == 'fullscreen' then return fullscreen end
+      return default
+    end
+    mp.set_property_native = function(name, value)
+      if name == 'fullscreen' then fullscreen = value end
+    end
+    local original_commandv = mp.commandv
+    mp.commandv = function(command, ...)
+      if command == 'quit' then quits = quits + 1 end
+      return original_commandv(command, ...)
+    end
+    for _, binding in ipairs({ 'ENTER', 'KP_ENTER', 'Alt+ENTER', 'Alt+KP_ENTER' }) do
+      key(binding); assert(fullscreen == true, binding .. ' enters fullscreen')
+      key(binding); assert(fullscreen == false, binding .. ' leaves fullscreen')
+    end
+    key('ENTER'); key('ESC')
+    assert(fullscreen == false and quits == 0, 'Esc leaves fullscreen without closing')
+    key('ESC')
+    assert(quits == 1, 'Esc in a window closes the player')
+    assert(#seeks == 0, 'fullscreen keys must not seek')
+  `)
+})
+
 it('executes exact single taps and fixed modifier steps without losing rapid taps to a slow decoder', async () => {
   await runSeekScript(`
     key('RIGHT', 'down'); key('RIGHT', 'up')
