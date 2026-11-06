@@ -1,5 +1,5 @@
 import type { WindowApi } from '../../../electron/preload'
-import { DEFAULT_SEEK_STEP_SEC, SeekStepSecZ } from '../../shared/playerSettings'
+import { DEFAULT_PLAYER, DEFAULT_SEEK_STEP_SEC, SeekStepSecZ } from '../../shared/playerSettings'
 import { DEFAULT_SUBTITLE_CONCURRENCY, SubtitleConcurrencyZ } from '../../shared/subtitleQueue'
 
 import { DEFAULT_PRIVACY_SETTINGS, PrivacySettingsZ } from '../../shared/privacy'
@@ -173,6 +173,7 @@ const mockSettings = {
   cacheLimitGb: 10,
   seekStepSec: DEFAULT_SEEK_STEP_SEC,
   nativePlayer: null as import('../../shared/types').NativePlayerInfo | null,
+  defaultPlayer: DEFAULT_PLAYER as import('../../shared/playerSettings').DefaultPlayer,
 }
 let mockCacheBytes = 512 * 1024 * 1024
 const mockCacheInfo = () => ({

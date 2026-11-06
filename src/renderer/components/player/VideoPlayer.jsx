@@ -82,8 +82,12 @@ function VideoPlayer({
   const [activeSubtitleText, setActiveSubtitleText] = React.useState(null)
   const [isSubtitleEnabled, setIsSubtitleEnabled] = React.useState(true)
   const [subtitleSelection, setSubtitleSelection] = React.useState(null)
+  const settingsCache = useQueryClient()
+  // When the external player is the default, don't start the in-app video only to stop it again.
   const [useInAppPlayback, setUseInAppPlayback] = React.useState(
-    !video.filePath.toLowerCase().endsWith('.avi'),
+    () =>
+      !video.filePath.toLowerCase().endsWith('.avi') &&
+      settingsCache.getQueryData(['app-settings'])?.defaultPlayer !== 'native',
   )
   const enableInAppPlayback = React.useCallback(() => {
     setPlaybackRate((value) => (PlaybackRateZ.safeParse(value).success ? value : 1))
@@ -528,6 +532,15 @@ function VideoPlayer({
     onNativeLaunchPendingChange?.(true)
     openInNativePlayer.mutate()
   }, [onNativeLaunchPendingChange, openInNativePlayer, stopSmoothSeek])
+  const prefersNativePlayer = settings?.defaultPlayer === 'native'
+  // Launch the external player once per video; "인앱 플레이어로 시도" afterwards stays in-app.
+  const autoNativeVideoRef = React.useRef(null)
+  React.useEffect(() => {
+    if (!prefersNativePlayer || !nativePlayerFetched || !nativePlayerInfo) return
+    if (autoNativeVideoRef.current === video.id) return
+    autoNativeVideoRef.current = video.id
+    requestNativePlayback()
+  }, [prefersNativePlayer, nativePlayerFetched, nativePlayerInfo, video.id, requestNativePlayback])
   React.useEffect(() => {
     setMediaPlaybackError(null)
   }, [playbackSource, useInAppPlayback])
@@ -1685,7 +1698,11 @@ function VideoPlayer({
               'absolute inset-0 flex flex-col items-center justify-center gap-3 bg-black/60 px-6 text-center text-sm text-white'
             }
           >
-            <p>{'이 형식은 외부 플레이어에서 더 안정적으로 재생됩니다.'}</p>
+            <p>
+              {prefersNativePlayer
+                ? '설정에서 외부 플레이어를 기본 플레이어로 선택했습니다.'
+                : '이 형식은 외부 플레이어에서 더 안정적으로 재생됩니다.'}
+            </p>
             <div className={'flex gap-3'}>
               <button
                 onClick={requestNativePlayback}

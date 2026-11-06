@@ -382,6 +382,7 @@ export interface Config {
   cacheLimitGb?: number
   seekStepSec?: number
   nativePlayer?: NativePlayerInfo | null
+  defaultPlayer?: import('./playerSettings').DefaultPlayer
   githubStarPromptShown?: boolean
   autoUpdateEnabled?: boolean
   /** Words the user removed from performers; never auto-detected again. */
@@ -392,6 +393,7 @@ export interface AppSettings {
   cacheLimitGb: number
   seekStepSec: number
   nativePlayer?: NativePlayerInfo | null
+  defaultPlayer: import('./playerSettings').DefaultPlayer
 }
 /** Chromium capabilities, not the decoder selected for an individual video. */
 export interface AccelerationInfo {

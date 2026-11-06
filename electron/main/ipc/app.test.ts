@@ -63,7 +63,7 @@ describe('persisted playback settings', () => {
     registerAppHandlers()
     expect(settingsHandler(IPC.APP.GET_SETTINGS)()).toEqual({
       ok: true,
-      value: { cacheLimitGb: 10, seekStepSec: 1, nativePlayer: null },
+      value: { cacheLimitGb: 10, seekStepSec: 1, nativePlayer: null, defaultPlayer: 'inApp' },
     })
     expect(mocks.updateConfig).not.toHaveBeenCalled()
   })
@@ -80,7 +80,7 @@ describe('persisted playback settings', () => {
     const update = settingsHandler(IPC.APP.UPDATE_SETTINGS)
     await expect(update({}, { seekStepSec: 15 })).resolves.toEqual({
       ok: true,
-      value: { cacheLimitGb: 25, seekStepSec: 15, nativePlayer: null },
+      value: { cacheLimitGb: 25, seekStepSec: 15, nativePlayer: null, defaultPlayer: 'inApp' },
     })
     expect(config).toEqual({ libraries: [], cacheLimitGb: 25, seekStepSec: 15 })
     expect(mocks.trimPlaybackCache).not.toHaveBeenCalled()
@@ -89,6 +89,24 @@ describe('persisted playback settings', () => {
     })
     await expect(update({}, { seekStepSec: 30 })).rejects.toThrow('Synthetic save failure')
     expect(settingsHandler(IPC.APP.GET_SETTINGS)().value.seekStepSec).toBe(15)
+  })
+
+  it('persists the default player choice', async () => {
+    let config: Config = { libraries: [] }
+    mocks.loadConfig.mockImplementation(() => config)
+    mocks.updateConfig.mockImplementation((update: (current: Config) => Config) => {
+      config = update(config)
+      return config
+    })
+    const { registerAppHandlers } = await import('./app')
+    registerAppHandlers()
+    const update = settingsHandler(IPC.APP.UPDATE_SETTINGS)
+    await expect(update({}, { defaultPlayer: 'native' })).resolves.toMatchObject({
+      ok: true,
+      value: { defaultPlayer: 'native' },
+    })
+    expect(config).toEqual({ libraries: [], defaultPlayer: 'native' })
+    expect(settingsHandler(IPC.APP.GET_SETTINGS)().value.defaultPlayer).toBe('native')
   })
 })
 

@@ -5,7 +5,9 @@ import PlaybackHelpButton from '../player/PlaybackHelpButton'
 import AppUpdatePanel from './AppUpdatePanel'
 
 import {
+  DEFAULT_PLAYER,
   DEFAULT_SEEK_STEP_SEC,
+  type DefaultPlayer,
   MAX_SEEK_STEP_SEC,
   MIN_SEEK_STEP_SEC,
   SeekStepSecZ,
@@ -60,6 +62,7 @@ export default function SettingsDialog({ onClose }: SettingsDialogProps) {
   const [limitInput, setLimitInput] = useState('')
   const [seekStepInput, setSeekStepInput] = useState('')
   const [selectedNative, setSelectedNative] = useState<NativePlayerInfo | null>(null)
+  const [defaultPlayer, setDefaultPlayer] = useState<DefaultPlayer>(DEFAULT_PLAYER)
   const [nativePlayers, setNativePlayers] = useState<NativePlayerInfo[]>([])
   const [manualPlayerName, setManualPlayerName] = useState<NativePlayerInfo['name']>('mpv')
   const [playersLoading, setPlayersLoading] = useState(true)
@@ -84,7 +87,9 @@ export default function SettingsDialog({ onClose }: SettingsDialogProps) {
     settings !== null && seekStep !== (settings.seekStepSec ?? DEFAULT_SEEK_STEP_SEC)
   const nativeChanged =
     settings !== null && playerKey(selectedNative) !== playerKey(settings.nativePlayer)
-  const changed = cacheChanged || nativeChanged || seekStepChanged
+  const defaultPlayerChanged =
+    settings !== null && defaultPlayer !== (settings.defaultPlayer ?? DEFAULT_PLAYER)
+  const changed = cacheChanged || nativeChanged || seekStepChanged || defaultPlayerChanged
   const playerOptions = [...nativePlayers]
   if (
     selectedNative &&
@@ -118,6 +123,7 @@ export default function SettingsDialog({ onClose }: SettingsDialogProps) {
         if (!active) return
         setSettings(settingsResult.value)
         setSelectedNative(settingsResult.value.nativePlayer ?? null)
+        setDefaultPlayer(settingsResult.value.defaultPlayer ?? DEFAULT_PLAYER)
         setLimitInput(String(settingsResult.value.cacheLimitGb))
         setSeekStepInput(String(settingsResult.value.seekStepSec ?? DEFAULT_SEEK_STEP_SEC))
         setCacheInfo(cacheResult.value)
@@ -186,25 +192,26 @@ export default function SettingsDialog({ onClose }: SettingsDialogProps) {
       if (cacheChanged) patch.cacheLimitGb = limit
       if (seekStepChanged) patch.seekStepSec = seekStep
       if (nativeChanged) patch.nativePlayer = selectedNative
+      if (defaultPlayerChanged) patch.defaultPlayer = defaultPlayer
       const result = await window.api.app.updateSettings(patch)
       if (!result.ok) throw new Error(result.error)
       setSettings(result.value)
       setLimitInput(String(result.value.cacheLimitGb))
       setSeekStepInput(String(result.value.seekStepSec ?? DEFAULT_SEEK_STEP_SEC))
       setSelectedNative(result.value.nativePlayer ?? null)
+      setDefaultPlayer(result.value.defaultPlayer ?? DEFAULT_PLAYER)
       setCacheInfo((previous) =>
         previous ? { ...previous, limitBytes: result.value.cacheLimitGb * GB } : previous,
       )
+      const playerChanged = nativeChanged || defaultPlayerChanged
       setNotice(
-        seekStepChanged
-          ? cacheChanged || nativeChanged
-            ? '설정을 저장했습니다.'
-            : '탐색 간격을 저장했습니다.'
-          : nativeChanged
-            ? cacheChanged
-              ? '캐시와 외부 플레이어 설정을 저장했습니다.'
-              : '외부 플레이어 설정을 저장했습니다.'
-            : '캐시 용량 상한을 저장했습니다.',
+        [seekStepChanged, cacheChanged, playerChanged].filter(Boolean).length > 1
+          ? '설정을 저장했습니다.'
+          : seekStepChanged
+            ? '탐색 간격을 저장했습니다.'
+            : playerChanged
+              ? '플레이어 설정을 저장했습니다.'
+              : '캐시 용량 상한을 저장했습니다.',
       )
       queryClient.setQueryData(['app-settings'], result.value)
       if (nativeChanged) await queryClient.invalidateQueries({ queryKey: ['native-player-info'] })
@@ -504,6 +511,34 @@ export default function SettingsDialog({ onClose }: SettingsDialogProps) {
               <h3 id="native-player-title" className="font-semibold">
                 외부 플레이어
               </h3>
+              <fieldset className="space-y-2" disabled={busy || confirmCleanup}>
+                <legend className="font-medium">영상을 열 때 사용할 플레이어</legend>
+                {(
+                  [
+                    ['inApp', '인앱 플레이어'],
+                    ['native', '외부 플레이어 (아래에서 선택한 플레이어)'],
+                  ] as const
+                ).map(([value, label]) => (
+                  <label key={value} className="flex items-center gap-2">
+                    <input
+                      type="radio"
+                      name="default-player"
+                      value={value}
+                      checked={defaultPlayer === value}
+                      onChange={() => {
+                        setDefaultPlayer(value)
+                        setNotice(null)
+                      }}
+                    />
+                    {label}
+                  </label>
+                ))}
+                <p className="text-xs leading-relaxed text-zinc-400">
+                  외부 플레이어를 선택하면 영상을 열 때 바로 외부 창에서 재생합니다. 외부 플레이어를
+                  찾지 못하면 인앱 플레이어로 재생합니다. 재생 화면의 인앱 플레이어로 시도 버튼으로
+                  언제든 전환할 수 있습니다.
+                </p>
+              </fieldset>
               <div className="rounded border border-zinc-700 bg-zinc-950/50 p-3 text-xs">
                 <p className="text-zinc-400">현재 설정</p>
                 <p data-testid="saved-native-player" className="mt-1 break-all">

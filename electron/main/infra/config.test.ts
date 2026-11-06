@@ -78,6 +78,15 @@ describe('safe configuration persistence', () => {
     expect(loadConfig().libraries[0]).toMatchObject({ id: 'library-1', folderPath: '' })
   })
 
+  it('stores a valid default player and refuses an unknown one', () => {
+    saveConfig({ ...example(), defaultPlayer: 'native' })
+    expect(loadConfig().defaultPlayer).toBe('native')
+    expect(() =>
+      saveConfig({ ...example(), defaultPlayer: 'mpv' as unknown as 'native' }),
+    ).toThrow()
+    expect(loadConfig().defaultPlayer).toBe('native')
+  })
+
   it('does not rotate or reformat an unchanged valid registry', () => {
     const original = '\uFEFF' + JSON.stringify(example())
     writeFileSync(state.path, original)

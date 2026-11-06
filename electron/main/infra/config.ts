@@ -13,7 +13,7 @@ import { randomUUID } from 'node:crypto'
 import { basename, dirname, join } from 'node:path'
 import { z } from 'zod'
 import type { Config } from '@shared/types'
-import { SeekStepSecZ } from '@shared/playerSettings'
+import { DefaultPlayerZ, SeekStepSecZ } from '@shared/playerSettings'
 import { getConfigPath } from './paths'
 import { PrivacySettingsZ } from '@shared/privacy'
 import { DiscoveryPreferencesZ } from '@shared/discovery'
@@ -47,6 +47,7 @@ const ConfigSchema = z
     lastActiveLibraryId: NonemptyString.optional(),
     cacheLimitGb: z.number().finite().min(1).max(1000).optional(),
     seekStepSec: SeekStepSecZ.optional(),
+    defaultPlayer: DefaultPlayerZ.optional(),
     githubStarPromptShown: z.boolean().optional(),
     autoUpdateEnabled: z.boolean().optional(),
     performerBlocklist: z.array(z.string()).optional(),

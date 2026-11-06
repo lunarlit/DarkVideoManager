@@ -1,6 +1,6 @@
 import { PlaybackRateZ } from './playbackRate'
 import { z } from 'zod'
-import { SeekStepSecZ } from './playerSettings'
+import { DefaultPlayerZ, SeekStepSecZ } from './playerSettings'
 import { SubtitleConcurrencyZ } from './subtitleQueue'
 import { AppUpdateStateZ } from './appUpdate'
 
@@ -196,6 +196,7 @@ export const IPC_SCHEMAS = {
         cacheLimitGb: z.number().finite().min(1).max(1000).optional(),
         seekStepSec: SeekStepSecZ.optional(),
         nativePlayer: NativePlayerInfoZ.nullable().optional(),
+        defaultPlayer: DefaultPlayerZ.optional(),
       })
       .strict(),
   ]),

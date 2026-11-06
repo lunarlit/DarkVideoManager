@@ -1264,7 +1264,13 @@ export function createDemoAdapter(
         window.location.hash = '#/'
         return ok(null)
       },
-      getSettings: async () => ok({ cacheLimitGb: 0, seekStepSec: 1, nativePlayer: null }),
+      getSettings: async () =>
+        ok({
+          cacheLimitGb: 0,
+          seekStepSec: 1,
+          nativePlayer: null,
+          defaultPlayer: 'inApp' as const,
+        }),
       updateSettings: unsupported,
       getCacheInfo: unsupported,
       cleanCache: unsupported,
