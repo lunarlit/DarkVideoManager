@@ -1,13 +1,12 @@
-import TemporaryPlaybackBoundary from './components/player/TemporaryPlaybackBoundary'
+import FileDropGuard from './components/FileDropGuard'
 import AppRouter from './router'
 import PrivacyBoundary from './components/privacy/PrivacyBoundary'
 
 export default function App() {
   return (
     <PrivacyBoundary>
-      <TemporaryPlaybackBoundary>
-        <AppRouter />
-      </TemporaryPlaybackBoundary>
+      <FileDropGuard />
+      <AppRouter />
     </PrivacyBoundary>
   )
 }
