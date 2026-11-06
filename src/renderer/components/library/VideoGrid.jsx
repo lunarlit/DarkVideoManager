@@ -3,10 +3,10 @@ import * as React from 'react'
 import { useVirtualizer } from '@tanstack/react-virtual'
 import VideoCard$1 from './VideoCard'
 const MIN_CARD_WIDTH = 260
-const CARD_HEIGHT = 440
+// Card = 16:9 thumbnail (scales with the column width) + a fixed-height info area.
+const CARD_INFO_HEIGHT = 180
 const GRID_GAP = 16
 const GRID_PADDING = 16
-const ROW_HEIGHT = CARD_HEIGHT + GRID_GAP
 const EMPTY_SUBTITLE_JOBS = new Map()
 function VideoGrid({
   videos,
@@ -43,6 +43,8 @@ function VideoGrid({
     if (availableWidth <= 0) return MIN_CARD_WIDTH
     return (availableWidth - GRID_GAP * (columnCount - 1)) / columnCount
   }, [columnCount, containerWidth])
+  const CARD_HEIGHT = Math.round((itemWidth * 9) / 16) + CARD_INFO_HEIGHT
+  const ROW_HEIGHT = CARD_HEIGHT + GRID_GAP
   const rowCount = Math.ceil(videos.length / columnCount)
   const rowVirtualizer = useVirtualizer({
     count: rowCount,
@@ -50,6 +52,9 @@ function VideoGrid({
     estimateSize: () => ROW_HEIGHT,
     overscan: 4,
   })
+  React.useEffect(() => {
+    rowVirtualizer.measure()
+  }, [ROW_HEIGHT, rowVirtualizer])
   React.useEffect(() => {
     const container = containerRef.current
     if (!container) return

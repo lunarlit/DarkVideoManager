@@ -82,8 +82,12 @@ function VideoPlayer({
   const [activeSubtitleText, setActiveSubtitleText] = React.useState(null)
   const [isSubtitleEnabled, setIsSubtitleEnabled] = React.useState(true)
   const [subtitleSelection, setSubtitleSelection] = React.useState(null)
+  const settingsCache = useQueryClient()
+  // When the external player is the default, don't start the in-app video only to stop it again.
   const [useInAppPlayback, setUseInAppPlayback] = React.useState(
-    !video.filePath.toLowerCase().endsWith('.avi'),
+    () =>
+      !video.filePath.toLowerCase().endsWith('.avi') &&
+      settingsCache.getQueryData(['app-settings'])?.defaultPlayer !== 'native',
   )
   const enableInAppPlayback = React.useCallback(() => {
     setPlaybackRate((value) => (PlaybackRateZ.safeParse(value).success ? value : 1))
@@ -108,6 +112,25 @@ function VideoPlayer({
     onFullscreenChange,
   )
   const handleViewKey = view.handleKey
+  // In fullscreen the control bar shows on mouse movement and hides after a few
+  // idle seconds (it stays while paused or while the pointer is over it).
+  const [fullscreenControlsVisible, setFullscreenControlsVisible] = React.useState(true)
+  const controlsHideTimerRef = React.useRef(null)
+  const controlsHoveredRef = React.useRef(false)
+  const revealFullscreenControls = React.useCallback(() => {
+    setFullscreenControlsVisible(true)
+    if (controlsHideTimerRef.current) clearTimeout(controlsHideTimerRef.current)
+    controlsHideTimerRef.current = setTimeout(() => {
+      if (!controlsHoveredRef.current) setFullscreenControlsVisible(false)
+    }, 3000)
+  }, [])
+  React.useEffect(() => {
+    if (view.isFullscreen) revealFullscreenControls()
+    return () => {
+      if (controlsHideTimerRef.current) clearTimeout(controlsHideTimerRef.current)
+    }
+  }, [view.isFullscreen, revealFullscreenControls])
+  const showControlBar = !view.isFullscreen || fullscreenControlsVisible || isPaused
   const { playerVolume, setPlayerVolume } = useLibraryStore()
   const navigate = useNavigate()
   const qc2 = useQueryClient()
@@ -509,6 +532,15 @@ function VideoPlayer({
     onNativeLaunchPendingChange?.(true)
     openInNativePlayer.mutate()
   }, [onNativeLaunchPendingChange, openInNativePlayer, stopSmoothSeek])
+  const prefersNativePlayer = settings?.defaultPlayer === 'native'
+  // Launch the external player once per video; "인앱 플레이어로 시도" afterwards stays in-app.
+  const autoNativeVideoRef = React.useRef(null)
+  React.useEffect(() => {
+    if (!prefersNativePlayer || !nativePlayerFetched || !nativePlayerInfo) return
+    if (autoNativeVideoRef.current === video.id) return
+    autoNativeVideoRef.current = video.id
+    requestNativePlayback()
+  }, [prefersNativePlayer, nativePlayerFetched, nativePlayerInfo, video.id, requestNativePlayback])
   React.useEffect(() => {
     setMediaPlaybackError(null)
   }, [playbackSource, useInAppPlayback])
@@ -1251,6 +1283,23 @@ function VideoPlayer({
     if (!Number.isFinite(nextTime)) return
     seekControllerRef.current?.request(nextTime, mouseSeekingRef.current)
   }, [])
+  // Map a pointer position on the seek bar to a time. The native thumb (~16px)
+  // keeps its centre 8px inside each end, so the same inset is used here.
+  // A press seeks once, precisely, to the pressed point. Only an actual drag
+  // switches to fast previews (finished with one precise seek on release), so a
+  // click never produces two visible jumps.
+  const seekDragRef = React.useRef({ startX: 0, dragging: false })
+  const seekToPointer = React.useCallback(
+    (event, preview) => {
+      const max = seekBarMax
+      if (!(max > 0)) return
+      const rect = event.currentTarget.getBoundingClientRect()
+      const usable = Math.max(1, rect.width - 16)
+      const ratio = Math.min(1, Math.max(0, (event.clientX - rect.left - 8) / usable))
+      seekControllerRef.current?.request(Math.round(ratio * max * 10) / 10, preview)
+    },
+    [seekBarMax],
+  )
   const finishMouseSeek = React.useCallback(() => {
     mouseSeekingRef.current = false
     seekControllerRef.current?.finish()
@@ -1289,9 +1338,8 @@ function VideoPlayer({
       ref={containerRef}
       tabIndex={-1}
       data-fullscreen-view={view.fullscreenMode}
-      className={
-        'relative flex h-full min-h-0 min-w-0 flex-col overflow-hidden bg-black outline-hidden'
-      }
+      onMouseMove={view.isFullscreen ? revealFullscreenControls : undefined}
+      className={`relative flex h-full min-h-0 min-w-0 flex-col overflow-hidden bg-black outline-hidden ${view.isFullscreen && !showControlBar ? 'cursor-none' : ''}`}
     >
       {view.isFullscreen && <FullscreenViewToggle view={view} containerRef={containerRef} />}
       {!view.isFullscreen && (
@@ -1420,7 +1468,7 @@ function VideoPlayer({
         )}
         {isSubtitleEnabled && activeSubtitleText && (
           <div
-            className={`pointer-events-none absolute inset-x-0 z-20 flex justify-center px-8 ${view.isFullscreen ? (view.fullscreenMode === 'highlights' ? 'bottom-12' : 'bottom-6') : orderedSubtitles.length > 1 ? 'bottom-32' : 'bottom-24'}`}
+            className={`pointer-events-none absolute inset-x-0 z-20 flex justify-center px-8 ${view.isFullscreen && !(useInAppPlayback && showControlBar) ? 'bottom-6' : view.isFullscreen ? 'bottom-32' : orderedSubtitles.length > 1 ? 'bottom-32' : 'bottom-24'}`}
           >
             <div
               className={
@@ -1515,12 +1563,17 @@ function VideoPlayer({
             </p>
           </div>
         )}
-        {useInAppPlayback && !view.isFullscreen && (
+        {useInAppPlayback && showControlBar && (
           <div
-            className={
-              'absolute inset-x-0 bottom-0 z-20 border-t border-white/10 bg-black/75 px-4 py-3 text-white'
-            }
+            className={`absolute inset-x-0 z-20 border-t border-white/10 bg-black/75 px-4 py-3 text-white bottom-0`}
             onMouseDown={focusPlayerContainer}
+            onMouseEnter={() => {
+              controlsHoveredRef.current = true
+            }}
+            onMouseLeave={() => {
+              controlsHoveredRef.current = false
+              if (view.isFullscreen) revealFullscreenControls()
+            }}
           >
             <div className={'grid grid-cols-[6.75rem_3rem_minmax(0,1fr)_3rem] items-center gap-3'}>
               <div className={'flex gap-2'}>
@@ -1548,31 +1601,75 @@ function VideoPlayer({
               <span className={'text-right text-xs tabular-nums text-zinc-300'}>
                 {formatTime(currentTimeSec)}
               </span>
-              <input
-                type={'range'}
-                min={0}
-                max={seekBarMax}
-                step={0.1}
-                value={Math.min(currentTimeSec, seekBarMax)}
-                disabled={seekBarMax <= 0}
-                aria-label={'재생 위치'}
+              {/* The pointer is handled here, not by the native range: pressing on the
+                  thumb would otherwise start a drag without moving, so a click always
+                  seeks to exactly the pressed point, thumb or not. */}
+              <div
+                className={`relative flex min-w-0 flex-1 items-center py-2 ${seekBarMax > 0 ? 'cursor-pointer' : 'cursor-not-allowed'}`}
                 onPointerDown={(event) => {
+                  if (seekBarMax <= 0 || event.button !== 0) return
+                  event.preventDefault()
                   stopSmoothSeek(false)
                   mouseSeekingRef.current = true
                   setIsSeekingWithMouse(true)
                   event.currentTarget.setPointerCapture(event.pointerId)
+                  seekDragRef.current = { startX: event.clientX, dragging: false }
+                  seekToPointer(event, false)
                 }}
-                onPointerUp={finishMouseSeek}
-                onPointerCancel={finishMouseSeek}
-                onBlur={finishMouseSeek}
-                onChange={handleSeekChange}
-                className={
-                  'h-2 min-w-0 flex-1 cursor-pointer appearance-none rounded-full bg-zinc-700 accent-indigo-400 disabled:cursor-not-allowed disabled:opacity-50'
-                }
-                style={{
-                  background: `linear-gradient(to right, #818cf8 0%, #818cf8 ${seekBarProgress}%, #3f3f46 ${seekBarProgress}%, #3f3f46 100%)`,
+                onPointerMove={(event) => {
+                  if (
+                    !mouseSeekingRef.current ||
+                    !event.currentTarget.hasPointerCapture(event.pointerId)
+                  )
+                    return
+                  const drag = seekDragRef.current
+                  if (!drag.dragging && Math.abs(event.clientX - drag.startX) < 3) return
+                  drag.dragging = true
+                  seekToPointer(event, true)
                 }}
-              />
+                onPointerUp={() => {
+                  if (!mouseSeekingRef.current) return
+                  // No extra seek here: the press (or the last drag position) is final.
+                  finishMouseSeek()
+                }}
+                onPointerCancel={() => {
+                  if (mouseSeekingRef.current) finishMouseSeek()
+                }}
+              >
+                <input
+                  type={'range'}
+                  min={0}
+                  max={seekBarMax}
+                  step={0.1}
+                  value={Math.min(currentTimeSec, seekBarMax)}
+                  disabled={seekBarMax <= 0}
+                  aria-label={'재생 위치'}
+                  onChange={handleSeekChange}
+                  className={
+                    'pointer-events-none h-2 min-w-0 flex-1 appearance-none rounded-full bg-zinc-700 accent-indigo-400 disabled:opacity-50'
+                  }
+                  style={{
+                    background: `linear-gradient(to right, #818cf8 0%, #818cf8 ${seekBarProgress}%, #3f3f46 ${seekBarProgress}%, #3f3f46 100%)`,
+                  }}
+                />
+                {seekBarMax > 0 && orderedHighlights.length > 0 && (
+                  <div
+                    role="group"
+                    aria-label="하이라이트 위치"
+                    className={'pointer-events-none absolute inset-0'}
+                  >
+                    {orderedHighlights.map((highlight) => (
+                      <HighlightMarker
+                        highlight={highlight}
+                        durationSec={seekBarMax}
+                        onJump={(timeSec) => void jumpToTime(timeSec)}
+                        onDelete={() => deleteHighlight.mutate(highlight.id)}
+                        key={highlight.id}
+                      />
+                    ))}
+                  </div>
+                )}
+              </div>
               <span className={'text-xs tabular-nums text-zinc-400'}>{formatTime(seekBarMax)}</span>
             </div>
             {orderedSubtitles.length > 1 && (
@@ -1601,7 +1698,11 @@ function VideoPlayer({
               'absolute inset-0 flex flex-col items-center justify-center gap-3 bg-black/60 px-6 text-center text-sm text-white'
             }
           >
-            <p>{'이 형식은 외부 플레이어에서 더 안정적으로 재생됩니다.'}</p>
+            <p>
+              {prefersNativePlayer
+                ? '설정에서 외부 플레이어를 기본 플레이어로 선택했습니다.'
+                : '이 형식은 외부 플레이어에서 더 안정적으로 재생됩니다.'}
+            </p>
             <div className={'flex gap-3'}>
               <button
                 onClick={requestNativePlayback}
@@ -1697,39 +1798,6 @@ function VideoPlayer({
           </div>
         )}
       </div>
-      {durationSec > 0 && (!view.isFullscreen || view.fullscreenMode === 'highlights') && (
-        <div
-          role="group"
-          aria-label="하이라이트 위치"
-          className={
-            view.isFullscreen
-              ? 'absolute inset-x-0 bottom-0 z-20 h-8 border-t border-white/10 bg-black/40'
-              : 'h-8 shrink-0 border-t border-zinc-700 bg-zinc-900 px-4'
-          }
-        >
-          <div
-            className={
-              view.isFullscreen
-                ? 'h-full'
-                : 'grid h-full grid-cols-[6.75rem_3rem_minmax(0,1fr)_3rem] gap-3'
-            }
-          >
-            <div
-              className={view.isFullscreen ? 'relative mx-3 h-full' : 'relative col-start-3 h-full'}
-            >
-              {orderedHighlights.map((highlight) => (
-                <HighlightMarker
-                  highlight={highlight}
-                  durationSec={durationSec}
-                  onJump={(timeSec) => void jumpToTime(timeSec)}
-                  onDelete={() => deleteHighlight.mutate(highlight.id)}
-                  key={highlight.id}
-                />
-              ))}
-            </div>
-          </div>
-        </div>
-      )}
       {!view.isFullscreen && orderedHighlights.length > 0 && (
         <div
           className={
@@ -1768,18 +1836,24 @@ function VideoPlayer({
   )
 }
 function HighlightMarker({ highlight, durationSec, onJump, onDelete }) {
-  const pct = (highlight.timeStart / durationSec) * 100
+  const ratio = Math.min(1, Math.max(0, highlight.timeStart / durationSec))
   return (
     <button
-      title={`${formatTime(highlight.timeStart)}${highlight.label ? ` - ${highlight.label}` : ''}`}
+      type="button"
+      title={`${formatTime(highlight.timeStart)}${highlight.label ? ` - ${highlight.label}` : ''} · 클릭: 이동 · 우클릭: 삭제`}
+      aria-label={`하이라이트 ${formatTime(highlight.timeStart)}로 이동`}
+      onPointerDown={(event) => event.stopPropagation()}
       onClick={() => onJump(highlight.timeStart)}
       onContextMenu={(event) => {
         event.preventDefault()
         onDelete()
       }}
-      className={'absolute top-1 h-6 w-1.5 -translate-x-1/2 rounded-xs'}
+      className={
+        'pointer-events-auto absolute top-1/2 h-4 w-1 -translate-x-1/2 -translate-y-1/2 rounded-xs ring-1 ring-black/60 hover:h-5 hover:w-1.5'
+      }
       style={{
-        left: `${pct}%`,
+        // The range thumb (~16px) keeps its centre 8px inside each end.
+        left: `calc(8px + (100% - 16px) * ${ratio})`,
         backgroundColor: colorToHex(highlight.color),
       }}
     />

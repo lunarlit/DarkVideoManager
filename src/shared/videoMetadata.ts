@@ -40,6 +40,34 @@ export function hasVideoTag(value: string | undefined, requestedTag: string): bo
   return Boolean(key) && parseVideoTags(value).some((tag) => tag.toLowerCase() === key)
 }
 
+export function normalizeVideoPerformer(value: string): string {
+  return value.trim().normalize('NFC')
+}
+
+function uniquePerformers(values: string[]): string[] {
+  const performers = new Map<string, string>()
+  for (const value of values) {
+    const performer = normalizeVideoPerformer(value)
+    const key = performer.toLowerCase()
+    if (performer && !performers.has(key)) performers.set(key, performer)
+  }
+  return [...performers.values()]
+}
+
+/** Performers are stored comma-separated (names may contain spaces). */
+export function parseVideoPerformers(value?: string): string[] {
+  return uniquePerformers((value ?? '').split(/[,\r\n]+/))
+}
+
+export function serializeVideoPerformers(value?: string): string {
+  return parseVideoPerformers(value).join(', ')
+}
+
+export function hasVideoPerformer(value: string | undefined, requested: string): boolean {
+  const key = normalizeVideoPerformer(requested).toLowerCase()
+  return Boolean(key) && parseVideoPerformers(value).some((name) => name.toLowerCase() === key)
+}
+
 export function parseVideoSearch(value?: string): { text: string; tags: string[] } {
   const tags: string[] = []
   const text = (value ?? '').replace(/(^|\s)#([^\s,]+)/g, (_match, prefix: string, tag: string) => {
@@ -53,18 +81,21 @@ export function parseVideoSearch(value?: string): { text: string; tags: string[]
 }
 
 export function collectVideoMetadataOptions(
-  videos: Iterable<{ category?: string; tags?: string }>,
+  videos: Iterable<{ category?: string; tags?: string; performers?: string }>,
 ): VideoMetadataOptions {
   const categories = new Set<string>()
   const tags: string[] = []
+  const performers: string[] = []
   for (const video of videos) {
     const category = normalizeVideoCategory(video.category)
     if (category) categories.add(category)
     tags.push(...parseVideoTags(video.tags))
+    performers.push(...parseVideoPerformers(video.performers))
   }
   const compare = (left: string, right: string): number => left.localeCompare(right, 'ko')
   return {
     categories: [...categories].sort(compare),
     tags: uniqueTags(tags).sort(compare),
+    performers: uniquePerformers(performers).sort(compare),
   }
 }

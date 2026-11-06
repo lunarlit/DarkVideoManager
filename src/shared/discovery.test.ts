@@ -10,6 +10,7 @@ function video(id: string, patch: Partial<Video> = {}): Video {
     rating: 0,
     memo: '',
     tags: '',
+    performers: '',
     createdAt: '2026-10-01',
     updatedAt: '2026-10-01',
     resumePosSec: 0,

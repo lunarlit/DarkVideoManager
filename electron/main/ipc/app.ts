@@ -1,7 +1,7 @@
 import { app, dialog, BrowserWindow } from 'electron'
 import { IPC } from '@shared/ipc'
 import { ok } from '@shared/result'
-import { DEFAULT_SEEK_STEP_SEC } from '@shared/playerSettings'
+import { DEFAULT_PLAYER, DEFAULT_SEEK_STEP_SEC } from '@shared/playerSettings'
 import { registerIpcHandler } from './index'
 import { loadConfig, updateConfig } from '../infra/config'
 import { getCacheInfo, cleanPlaybackCache, trimPlaybackCache } from '../services/CacheService'
@@ -22,6 +22,7 @@ function getSettings() {
     cacheLimitGb: config.cacheLimitGb ?? 10,
     seekStepSec: config.seekStepSec ?? DEFAULT_SEEK_STEP_SEC,
     nativePlayer: config.nativePlayer ?? null,
+    defaultPlayer: config.defaultPlayer ?? DEFAULT_PLAYER,
   }
 }
 

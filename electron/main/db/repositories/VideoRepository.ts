@@ -6,14 +6,18 @@ import {
   VideoMeta,
   ProbeData,
   VideoMetadataOptions,
+  PerformerCount,
 } from '@shared/types'
 import {
   collectVideoMetadataOptions,
   hasVideoTag,
   normalizeVideoCategory,
   normalizeVideoTag,
+  normalizeVideoPerformer,
+  parseVideoPerformers,
   parseVideoSearch,
   serializeVideoTags,
+  serializeVideoPerformers,
 } from '@shared/videoMetadata'
 
 const metadataFunctionsRegistered = new WeakSet<Database>()
@@ -35,6 +39,7 @@ interface VideoRow {
   rating: number
   memo: string
   tags: string
+  performers: string
   category: string
   play_count: number
   play_time_sec: number
@@ -65,6 +70,7 @@ function rowToVideo(row: VideoRow): Video {
     rating: row.rating,
     memo: row.memo,
     tags: row.tags ?? '',
+    performers: row.performers ?? '',
     category: row.category ?? '',
     playCount: row.play_count ?? 0,
     playTimeSec: row.play_time_sec ?? 0,
@@ -76,6 +82,12 @@ function rowToVideo(row: VideoRow): Video {
     primaryThumbnailPath: row.primary_thumbnail_path ?? undefined,
     removalMode: row.removal_mode ?? undefined,
   }
+}
+
+/** Lower-cased folder path plus a separator, for prefix-matching file paths. */
+function folderPrefix(folder: string): string {
+  const separator = folder.includes('\\') || !folder.includes('/') ? '\\' : '/'
+  return (folder.replace(/[\\/]+$/, '') + separator).toLowerCase()
 }
 
 export class VideoRepository {
@@ -96,21 +108,22 @@ export class VideoRepository {
       | 'updatedAt'
       | 'primaryThumbnailPath'
       | 'tags'
+      | 'performers'
       | 'playCount'
       | 'playTimeSec'
       | 'hasSubtitles'
       | 'removalMode'
     > &
-      Partial<Pick<Video, 'tags' | 'playCount' | 'playTimeSec'>>,
+      Partial<Pick<Video, 'tags' | 'performers' | 'playCount' | 'playTimeSec'>>,
   ): void {
     this.db
       .prepare(
         `INSERT OR IGNORE INTO videos
          (id, file_path, file_name, file_hash, duration_sec, width, height,
-          codec, fps, bitrate, container, size_bytes, title, rating, memo, resume_pos_sec, tags, category, play_count, play_time_sec, last_played_at)
+          codec, fps, bitrate, container, size_bytes, title, rating, memo, resume_pos_sec, tags, performers, category, play_count, play_time_sec, last_played_at)
          VALUES
          (@id, @filePath, @fileName, @fileHash, @durationSec, @width, @height,
-          @codec, @fps, @bitrate, @container, @sizeBytes, @title, @rating, @memo, @resumePosSec, @tags, @category, @playCount, @playTimeSec, @lastPlayedAt)`,
+          @codec, @fps, @bitrate, @container, @sizeBytes, @title, @rating, @memo, @resumePosSec, @tags, @performers, @category, @playCount, @playTimeSec, @lastPlayedAt)`,
       )
       .run({
         id: video.id,
@@ -130,6 +143,7 @@ export class VideoRepository {
         memo: video.memo,
         resumePosSec: video.resumePosSec,
         tags: video.tags ?? '',
+        performers: serializeVideoPerformers(video.performers),
         category: normalizeVideoCategory(video.category),
         playCount: video.playCount ?? 0,
         playTimeSec: video.playTimeSec ?? 0,
@@ -175,35 +189,26 @@ export class VideoRepository {
     ).map(rowToVideo)
   }
 
-  search(query: SearchQuery): SearchResult {
+  /** WHERE clause, parameters and source table for a search's filters. */
+  private filterClause(query: SearchQuery): {
+    where: string
+    params: Record<string, unknown>
+    source: string
+  } {
     const {
       q: rawQuery,
       category,
       tag,
+      performer,
+      folder,
       rating,
+      ratingOp = 'gte',
       hasSubtitles,
       removed = false,
-      sortBy = 'createdAt',
-      sortDir = 'desc',
-      page = 1,
-      pageSize = 50,
     } = query
     const { text: q, tags: queryTags } = parseVideoSearch(rawQuery)
     const requestedTags = [...queryTags]
     if (tag !== undefined && normalizeVideoTag(tag)) requestedTags.push(tag)
-
-    const colMap: Record<string, string> = {
-      title: 'COALESCE(v.title, v.file_name)',
-      rating: 'v.rating',
-      createdAt: 'v.created_at',
-      lastPlayedAt: 'v.last_played_at',
-      durationSec: 'v.duration_sec',
-      fileName: 'v.file_name',
-      playCount: 'v.play_count',
-      playTimeSec: 'v.play_time_sec',
-    }
-    const col = colMap[sortBy] ?? 'v.created_at'
-    const dir = sortDir === 'asc' ? 'ASC' : 'DESC'
 
     const conditions: string[] = [removed ? 'v.removal_mode IS NOT NULL' : 'v.removal_mode IS NULL']
     const params: Record<string, unknown> = {}
@@ -217,15 +222,25 @@ export class VideoRepository {
       conditions.push(`dvm_has_video_tag(v.tags, @${parameter}) = 1`)
       params[parameter] = normalizeVideoTag(requestedTag)
     })
+    if (performer !== undefined && normalizeVideoPerformer(performer)) {
+      // Performers are stored comma-separated like tags, so the same matcher applies.
+      conditions.push('dvm_has_video_tag(v.performers, @performer) = 1')
+      params['performer'] = normalizeVideoPerformer(performer)
+    }
+    if (folder) {
+      conditions.push('substr(LOWER(v.file_path), 1, length(@folderPrefix)) = @folderPrefix')
+      params['folderPrefix'] = folderPrefix(folder)
+    }
     if (q) {
       conditions.push(
-        `(LOWER(v.file_name) LIKE '%' || LOWER(@q) || '%' OR LOWER(COALESCE(v.title,'')) LIKE '%' || LOWER(@q) || '%' OR LOWER(COALESCE(v.tags,'')) LIKE '%' || LOWER(@q) || '%')`,
+        `(LOWER(v.file_name) LIKE '%' || LOWER(@q) || '%' OR LOWER(COALESCE(v.title,'')) LIKE '%' || LOWER(@q) || '%' OR LOWER(COALESCE(v.tags,'')) LIKE '%' || LOWER(@q) || '%' OR LOWER(COALESCE(v.performers,'')) LIKE '%' || LOWER(@q) || '%')`,
       )
       params['q'] = q
     }
     if (rating !== undefined) {
-      conditions.push('v.rating >= @minRating')
-      params['minRating'] = rating
+      const operator = ratingOp === 'lte' ? '<=' : ratingOp === 'eq' ? '=' : '>='
+      conditions.push(`COALESCE(v.rating, 0) ${operator} @rating`)
+      params['rating'] = rating
     }
     if (hasSubtitles !== undefined) {
       conditions.push(
@@ -234,10 +249,37 @@ export class VideoRepository {
     }
 
     const where = conditions.length > 0 ? `WHERE ${conditions.join(' AND ')}` : ''
-    const offset = (page - 1) * pageSize
     // A leading-wildcard LIKE cannot seek these ordering indexes. A sequential table
     // scan avoids an extra table lookup for every row, especially for rare matches.
     const source = q && rating === undefined ? 'videos v NOT INDEXED' : 'videos v'
+    return { where, params, source }
+  }
+
+  /** A random video id among the search's matches (filters only, no paging). */
+  randomId(query: SearchQuery): string | null {
+    const { where, params, source } = this.filterClause(query)
+    const row = this.db
+      .prepare(`SELECT v.id FROM ${source} ${where} ORDER BY RANDOM() LIMIT 1`)
+      .get(params) as { id: string } | undefined
+    return row?.id ?? null
+  }
+
+  search(query: SearchQuery): SearchResult {
+    const { sortBy = 'createdAt', sortDir = 'desc', page = 1, pageSize = 50 } = query
+    const colMap: Record<string, string> = {
+      title: 'COALESCE(v.title, v.file_name)',
+      rating: 'v.rating',
+      createdAt: 'v.created_at',
+      lastPlayedAt: 'v.last_played_at',
+      durationSec: 'v.duration_sec',
+      fileName: 'v.file_name',
+      playCount: 'v.play_count',
+      playTimeSec: 'v.play_time_sec',
+    }
+    const col = colMap[sortBy] ?? 'v.created_at'
+    const dir = sortDir === 'asc' ? 'ASC' : 'DESC'
+    const { where, params, source } = this.filterClause(query)
+    const offset = (page - 1) * pageSize
 
     const { cnt } = this.db
       .prepare(`SELECT COUNT(*) AS cnt FROM ${source} ${where}`)
@@ -264,10 +306,61 @@ export class VideoRepository {
   metadataOptions(removed = false): VideoMetadataOptions {
     const rows = this.db
       .prepare(
-        `SELECT category, tags FROM videos WHERE removal_mode IS ${removed ? 'NOT ' : ''}NULL`,
+        `SELECT category, tags, performers FROM videos WHERE removal_mode IS ${removed ? 'NOT ' : ''}NULL`,
       )
-      .all() as Array<{ category: string; tags: string }>
+      .all() as Array<{ category: string; tags: string; performers: string }>
     return collectVideoMetadataOptions(rows)
+  }
+
+  performerCounts(removed = false): PerformerCount[] {
+    const rows = this.db
+      .prepare(`SELECT performers FROM videos WHERE removal_mode IS ${removed ? 'NOT ' : ''}NULL`)
+      .all() as Array<{ performers: string }>
+    const counts = new Map<string, PerformerCount>()
+    for (const row of rows)
+      for (const name of parseVideoPerformers(row.performers)) {
+        const key = name.toLowerCase()
+        const entry = counts.get(key)
+        if (entry) entry.count += 1
+        else counts.set(key, { name, count: 1 })
+      }
+    return [...counts.values()].sort(
+      (left, right) => right.count - left.count || left.name.localeCompare(right.name, 'ko'),
+    )
+  }
+
+  /** Remove one performer name from every video that has it. */
+  removePerformer(name: string): number {
+    // Compare ignoring case and repeated whitespace.
+    const key = (value: string) => normalizeVideoPerformer(value).replace(/\s+/g, ' ').toLowerCase()
+    const target = key(name)
+    if (!target) return 0
+    const rows = this.db
+      .prepare("SELECT id, performers FROM videos WHERE performers != ''")
+      .all() as Array<{ id: string; performers: string }>
+    const update = this.db.prepare('UPDATE videos SET performers = ? WHERE id = ?')
+    let changed = 0
+    this.db.transaction(() => {
+      for (const row of rows) {
+        const current = parseVideoPerformers(row.performers)
+        const kept = current.filter((performer) => key(performer) !== target)
+        if (kept.length === current.length) continue
+        update.run(serializeVideoPerformers(kept.join(', ')), row.id)
+        changed++
+      }
+    })()
+    return changed
+  }
+
+  /** Set the category of every non-removed video inside a folder (any depth). */
+  setCategoryForFolder(folder: string, category: string): number {
+    return this.db
+      .prepare(
+        `UPDATE videos SET category = @category
+         WHERE removal_mode IS NULL
+           AND substr(LOWER(file_path), 1, length(@prefix)) = @prefix`,
+      )
+      .run({ category: normalizeVideoCategory(category), prefix: folderPrefix(folder) }).changes
   }
 
   updateMeta(id: string, meta: VideoMeta): void {
@@ -288,6 +381,10 @@ export class VideoRepository {
     if (meta.tags !== undefined) {
       fields.push('tags = @tags')
       params['tags'] = serializeVideoTags(meta.tags)
+    }
+    if (meta.performers !== undefined) {
+      fields.push('performers = @performers')
+      params['performers'] = serializeVideoPerformers(meta.performers)
     }
     if (meta.category !== undefined) {
       fields.push('category = @category')
@@ -340,6 +437,18 @@ export class VideoRepository {
     // An asynchronous trash operation can finish after refresh marks the now-missing file.
     // Its successful outcome is authoritative for the removal reason.
     this.db.prepare('UPDATE videos SET removal_mode = ? WHERE id = ?').run(mode, id)
+  }
+
+  /** Delete the video row; thumbnails, subtitles, highlights and play history
+   *  rows go with it (ON DELETE CASCADE). */
+  deletePermanently(id: string): void {
+    // Delete child rows explicitly too, so this holds even where foreign keys
+    // are not enforced.
+    this.db.transaction(() => {
+      for (const table of ['thumbnails', 'subtitles', 'highlights', 'play_history'])
+        this.db.prepare(`DELETE FROM ${table} WHERE video_id = ?`).run(id)
+      this.db.prepare('DELETE FROM videos WHERE id = ?').run(id)
+    })()
   }
 
   restore(id: string): void {

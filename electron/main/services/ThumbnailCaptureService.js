@@ -20,6 +20,7 @@ import {
 } from './LibraryWorkService'
 import { isAbortError } from '../ffmpeg/queue'
 import { assertThumbnailJobAllowed, runThumbnailJob } from './ThumbnailJobService'
+import { isStashCover, removeThumbnailFiles } from './thumbnailFiles'
 const log = createLogger('ThumbnailService')
 
 async function withThumbnailWork(libraryId, videoId, total, operation) {
@@ -77,9 +78,19 @@ async function ensureThumbnailForVideoInternal(libraryId, videoId, webContents, 
     log.warn({ libraryId, videoId, filePath: video.filePath }, 'No thumbnails generated')
     throw new Error('동영상에서 썸네일을 추출하지 못했습니다.')
   }
+  // Regeneration replaces the generated candidates but keeps the Stash cover,
+  // which stays the primary image if it was the primary before.
+  const replaced = force ? existing.filter((thumbnail) => !isStashCover(thumbnail)) : []
+  const keptCoverIsPrimary = force && existing.some((t) => isStashCover(t) && t.isPrimary)
   db.transaction(() => {
-    if (force) thumbnailRepo.deleteByVideoId(videoId)
-    const primaryIndex = Math.min(Math.floor(results.length / 2), results.length - 1)
+    if (replaced.length)
+      thumbnailRepo.deleteByIds(
+        videoId,
+        replaced.map((thumbnail) => thumbnail.id),
+      )
+    const primaryIndex = keptCoverIsPrimary
+      ? -1
+      : Math.min(Math.floor(results.length / 2), results.length - 1)
     for (let index = 0; index < results.length; index++) {
       const result = results[index]
       thumbnailRepo.insert({
@@ -92,6 +103,7 @@ async function ensureThumbnailForVideoInternal(libraryId, videoId, webContents, 
     }
   }).immediate()
   work.committed = true
+  await removeThumbnailFiles(libraryId, replaced)
   notifyThumbnailReady(webContents, videoId)
   return true
 }

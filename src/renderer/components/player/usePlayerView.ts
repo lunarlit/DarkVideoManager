@@ -1,6 +1,6 @@
 import * as React from 'react'
 
-type FullscreenMode = 'windowed' | 'video' | 'highlights'
+type FullscreenMode = 'windowed' | 'highlights'
 
 export function usePlayerView(
   containerRef: React.RefObject<HTMLDivElement | null>,
@@ -58,19 +58,16 @@ export function usePlayerView(
   React.useEffect(() => {
     const sync = () => {
       const active = document.fullscreenElement === containerRef.current
-      updateFullscreenMode(
-        active
-          ? fullscreenModeRef.current === 'windowed'
-            ? 'video'
-            : fullscreenModeRef.current
-          : 'windowed',
-      )
+      // Fullscreen always shows the highlight positions with the control bar.
+      updateFullscreenMode(active ? 'highlights' : 'windowed')
       onFullscreenChange?.(active, explicitExit.current)
       explicitExit.current = false
       setPan({ x: 0, y: 0 })
     }
     document.addEventListener('fullscreenchange', sync)
-    updateFullscreenMode(document.fullscreenElement === containerRef.current ? 'video' : 'windowed')
+    updateFullscreenMode(
+      document.fullscreenElement === containerRef.current ? 'highlights' : 'windowed',
+    )
     return () => document.removeEventListener('fullscreenchange', sync)
   }, [containerRef, onFullscreenChange, updateFullscreenMode])
   React.useEffect(() => {
@@ -85,8 +82,7 @@ export function usePlayerView(
     onError(null)
     try {
       if (document.fullscreenElement === containerRef.current) {
-        if (fullscreenModeRef.current !== 'highlights') updateFullscreenMode('highlights')
-        else await exitFullscreen()
+        await exitFullscreen()
       } else {
         if (!containerRef.current?.requestFullscreen)
           throw new Error('전체화면을 지원하지 않습니다.')
@@ -113,9 +109,14 @@ export function usePlayerView(
         if (!event.repeat) void exitFullscreen()
       } else if (
         event.key === 'Enter' &&
-        event.altKey &&
+        !event.altKey &&
         !event.ctrlKey &&
         !event.metaKey &&
+        !event.shiftKey &&
+        !(
+          event.target instanceof Element &&
+          event.target.closest('button, a, select, [role="button"]')
+        ) &&
         (enabled || isFullscreen)
       ) {
         if (!event.repeat) void toggleFullscreen()

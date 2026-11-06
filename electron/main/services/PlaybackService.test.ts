@@ -61,7 +61,10 @@ describe('explicit playback seek accounting', () => {
     expect(() => endPlayback(libraryId, videoId, 2)).toThrow('database is unavailable')
     expect(isSourceFileInUse('/synthetic.mp4')).toBe(false)
     update.mockRestore()
-    expect(startPlayback(libraryId, videoId)).not.toBe(first)
+    // The old session is gone: starting again opens a new one (it acquires the
+    // source again) and, as the same video, continues the same history record.
+    expect(startPlayback(libraryId, videoId)).toBe(first)
+    expect(isSourceFileInUse('/synthetic.mp4')).toBe(true)
   })
   it('persists small paused seeks without increasing watched time or starting another session', () => {
     const session = startPlayback(libraryId, videoId)
@@ -106,5 +109,40 @@ describe('explicit playback seek accounting', () => {
       playTimeSec: 7,
       playCount: 1,
     })
+  })
+})
+
+describe('repeat plays of the same video', () => {
+  beforeEach(() => {
+    videos.insert({
+      id: 'other',
+      filePath: '/other.mp4',
+      fileName: 'other.mp4',
+      rating: 0,
+      memo: '',
+      resumePosSec: 0,
+    })
+  })
+
+  it('does not count again when the same video is played right after itself', () => {
+    const first = startPlayback(libraryId, videoId)
+    endPlayback(libraryId, videoId, 3)
+    vi.advanceTimersByTime(60_000)
+    expect(startPlayback(libraryId, videoId)).toBe(first)
+    endPlayback(libraryId, videoId, 5)
+    expect(history.findByVideoId(videoId)).toHaveLength(1)
+    expect(videos.findById(videoId)?.playCount).toBe(1)
+  })
+
+  it('counts again once another video was played in between', () => {
+    startPlayback(libraryId, videoId)
+    endPlayback(libraryId, videoId, 3)
+    vi.advanceTimersByTime(1000)
+    startPlayback(libraryId, 'other')
+    endPlayback(libraryId, 'other', 1)
+    vi.advanceTimersByTime(1000)
+    startPlayback(libraryId, videoId)
+    expect(videos.findById(videoId)?.playCount).toBe(2)
+    expect(videos.findById('other')?.playCount).toBe(1)
   })
 })

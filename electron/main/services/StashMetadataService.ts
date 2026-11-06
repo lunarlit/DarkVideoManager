@@ -275,6 +275,153 @@ export class StashMetadataService {
       this.active.delete(controller)
     }
   }
+  /**
+   * Fetch a scene's cover image (the "표지") from the configured Stash server.
+   * Best-effort: returns null when Stash is disabled, the request fails, the
+   * response is not a bounded image, or anything else goes wrong. Only the
+   * configured server (and its own origin) is ever contacted.
+   */
+  async fetchSceneCover(sceneId: string): Promise<Buffer | null> {
+    const id = String(sceneId).trim()
+    if (!/^[A-Za-z0-9_-]{1,64}$/.test(id)) return null
+    let saved: SavedSettings
+    try {
+      saved = this.read()
+    } catch {
+      return null
+    }
+    if (!saved.enabled || !saved.serverUrl) return null
+    let origin: string
+    try {
+      origin = new URL(stashEndpoint(saved.serverUrl)).origin
+    } catch {
+      return null
+    }
+    const headers: Record<string, string> = { Accept: 'image/*' }
+    if (saved.encryptedApiKey) {
+      try {
+        if (!this.dependencies.encryption.isEncryptionAvailable()) throw new Error()
+        headers.ApiKey = this.dependencies.encryption.decryptString(
+          Buffer.from(saved.encryptedApiKey, 'base64'),
+        )
+      } catch {
+        return null
+      }
+    }
+    const controller = new AbortController()
+    this.active.add(controller)
+    const timer = setTimeout(() => controller.abort(), this.dependencies.timeoutMs ?? 15_000)
+    const maxBytes = 15 * 1024 * 1024
+    try {
+      const response = await (this.dependencies.fetch ?? globalThis.fetch)(
+        `${origin}/scene/${id}/screenshot`,
+        { headers, redirect: 'error', credentials: 'omit', signal: controller.signal },
+      )
+      if (!response.ok || !response.body) return null
+      if (!/^image\//.test(response.headers.get('content-type') ?? '')) return null
+      if (Number(response.headers.get('content-length')) > maxBytes) {
+        await response.body.cancel().catch(() => undefined)
+        return null
+      }
+      const reader = response.body.getReader()
+      const chunks: Uint8Array[] = []
+      let length = 0
+      try {
+        let chunk = await reader.read()
+        while (!chunk.done) {
+          length += chunk.value.byteLength
+          if (length > maxBytes) return null
+          chunks.push(chunk.value)
+          chunk = await reader.read()
+        }
+      } finally {
+        await reader.cancel().catch(() => undefined)
+        reader.releaseLock()
+      }
+      const buffer = Buffer.concat(chunks)
+      const isJpeg = buffer[0] === 0xff && buffer[1] === 0xd8
+      const isPng = buffer[0] === 0x89 && buffer[1] === 0x50
+      const isWebp =
+        buffer.length > 12 &&
+        buffer.toString('ascii', 0, 4) === 'RIFF' &&
+        buffer.toString('ascii', 8, 12) === 'WEBP'
+      if (!buffer.length || !(isJpeg || isPng || isWebp)) return null
+      return buffer
+    } catch {
+      return null
+    } finally {
+      clearTimeout(timer)
+      this.active.delete(controller)
+    }
+  }
+  /**
+   * List the file names of every scene that has at least one performer, with how
+   * many performers each has. Used to seed a dictionary of confirmed performer
+   * names. Best-effort: returns [] when disabled or on any failure.
+   */
+  async listPerformerSceneFiles(): Promise<Array<{ basename: string; count: number }>> {
+    let saved: SavedSettings
+    try {
+      saved = this.read()
+    } catch {
+      return []
+    }
+    if (!saved.enabled || !saved.serverUrl) return []
+    const headers: Record<string, string> = {
+      'Content-Type': 'application/json',
+      Accept: 'application/json',
+    }
+    if (saved.encryptedApiKey) {
+      try {
+        if (!this.dependencies.encryption.isEncryptionAvailable()) throw new Error()
+        headers.ApiKey = this.dependencies.encryption.decryptString(
+          Buffer.from(saved.encryptedApiKey, 'base64'),
+        )
+      } catch {
+        return []
+      }
+    }
+    const controller = new AbortController()
+    this.active.add(controller)
+    const timer = setTimeout(() => controller.abort(), this.dependencies.timeoutMs ?? 15_000)
+    try {
+      const response = await (this.dependencies.fetch ?? globalThis.fetch)(
+        stashEndpoint(saved.serverUrl),
+        {
+          method: 'POST',
+          headers,
+          body: JSON.stringify({
+            query:
+              'query($f:FindFilterType!,$s:SceneFilterType){findScenes(filter:$f,scene_filter:$s){scenes{files{basename} performers{name}}}}',
+            variables: {
+              f: { per_page: 10000, page: 1 },
+              s: { performer_count: { value: 0, modifier: 'GREATER_THAN' } },
+            },
+          }),
+          redirect: 'error',
+          credentials: 'omit',
+          signal: controller.signal,
+        },
+      )
+      if (!response.ok) return []
+      const body = (await response.json()) as {
+        data?: { findScenes?: { scenes?: Array<{ files?: Array<{ basename?: string }>; performers?: unknown[] }> } }
+      }
+      const scenes = body.data?.findScenes?.scenes ?? []
+      const out: Array<{ basename: string; count: number }> = []
+      for (const scene of scenes) {
+        const basename = scene.files?.[0]?.basename
+        if (typeof basename === 'string' && basename)
+          out.push({ basename, count: Array.isArray(scene.performers) ? scene.performers.length : 0 })
+      }
+      return out
+    } catch {
+      return []
+    } finally {
+      clearTimeout(timer)
+      this.active.delete(controller)
+    }
+  }
 }
 
 let service: StashMetadataService | undefined

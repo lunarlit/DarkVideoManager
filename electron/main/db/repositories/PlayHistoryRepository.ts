@@ -51,6 +51,14 @@ export class PlayHistoryRepository {
       .run(endedAt, posEndSec, durationWatchedSec, id)
   }
 
+  /** The most recently started playback in this library. */
+  latest(): PlayHistoryEntry | undefined {
+    const row = this.db
+      .prepare('SELECT * FROM play_history ORDER BY started_at DESC, rowid DESC LIMIT 1')
+      .get() as PlayHistoryRow | undefined
+    return row ? rowToEntry(row) : undefined
+  }
+
   findByVideoId(videoId: string, limit = 20): PlayHistoryEntry[] {
     const rows = this.db
       .prepare('SELECT * FROM play_history WHERE video_id = ? ORDER BY started_at DESC LIMIT ?')

@@ -29,7 +29,28 @@ function removePartial(filePath: string): void {
   }
 }
 
-const PERCENTAGES = [0.1, 0.3, 0.5, 0.7, 0.9] as const
+export const THUMBNAIL_CANDIDATE_COUNT = 8
+// Skip the opening and ending (logos, intros, credits).
+const EDGE_MARGIN = 0.05
+
+/**
+ * Pick capture times: the video (minus its edges) is split into equal segments
+ * and one random point is taken inside each, so every regeneration yields a new
+ * set of scenes that still covers the whole video.
+ */
+export function buildCaptureTimes(
+  durationSec: number,
+  count = THUMBNAIL_CANDIDATE_COUNT,
+  random: () => number = Math.random,
+): number[] {
+  const start = durationSec * EDGE_MARGIN
+  const segment = (durationSec * (1 - EDGE_MARGIN * 2)) / count
+  return Array.from({ length: count }, (_, index) => {
+    // Stay inside the middle 80% of the segment so neighbours never touch.
+    const offset = 0.1 + 0.8 * Math.min(1, Math.max(0, random()))
+    return start + segment * (index + offset)
+  })
+}
 
 export interface ThumbnailResult {
   filePath: string
@@ -53,12 +74,12 @@ export async function generateThumbnails(
   mkdirSync(outputDir, { recursive: true })
   const results: ThumbnailResult[] = []
 
-  for (const [index, percentage] of PERCENTAGES.entries()) {
+  const captureTimes = buildCaptureTimes(safeDuration)
+  for (const [index, timeSec] of captureTimes.entries()) {
     if (signal?.aborted) {
       for (const result of results) removePartial(result.filePath)
       throw createAbortError()
     }
-    const timeSec = safeDuration * percentage
     const outputPath = join(outputDir, `${videoId}_${index}.jpg`)
 
     try {
@@ -71,7 +92,7 @@ export async function generateThumbnails(
       }
       log.warn({ err: error, videoId, timeSec }, '썸네일 추출 실패')
     } finally {
-      onProgress?.(index + 1, PERCENTAGES.length)
+      onProgress?.(index + 1, captureTimes.length)
     }
   }
 

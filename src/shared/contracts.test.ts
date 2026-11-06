@@ -199,6 +199,17 @@ describe('IPC contracts', () => {
     }
   })
 
+  it('accepts only known default players in settings updates', () => {
+    for (const defaultPlayer of ['inApp', 'native']) {
+      expect(IPC_SCHEMAS[IPC.APP.UPDATE_SETTINGS].safeParse([{ defaultPlayer }]).success).toBe(true)
+    }
+    for (const defaultPlayer of ['mpv', '', null, 1]) {
+      expect(IPC_SCHEMAS[IPC.APP.UPDATE_SETTINGS].safeParse([{ defaultPlayer }]).success).toBe(
+        false,
+      )
+    }
+  })
+
   it('rejects unknown search fields and invalid ranges', () => {
     expect(IPC_SCHEMAS[IPC.APP.UPDATE_SETTINGS].safeParse([{ cacheLimitGb: 10 }]).success).toBe(
       true,

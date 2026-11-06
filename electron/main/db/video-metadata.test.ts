@@ -90,6 +90,7 @@ describe('video categories and exact tag filtering', () => {
     expect(videos.metadataOptions(true)).toEqual({
       categories: ['보관'],
       tags: ['선수명', 'removed-only'],
+      performers: [],
     })
     expect(videos.metadataOptions().categories).toEqual(['야구', '축구'])
     expect(videos.metadataOptions().tags).not.toContain('removed-only')
@@ -145,7 +146,7 @@ describe('video categories and exact tag filtering', () => {
         INSERT INTO videos VALUES ('old', ' #PLAYER, player, 선수명 ', 'keep memo', 5, '2026-01-01', NULL);
       `)
       runMigrations(legacy, ':memory:')
-      expect(getSchemaVersion(legacy)).toBe(6)
+      expect(getSchemaVersion(legacy)).toBe(7)
       expect(legacy.prepare('SELECT id, tags, memo, rating, category FROM videos').get()).toEqual({
         id: 'old',
         tags: ' #PLAYER, player, 선수명 ',
@@ -154,9 +155,127 @@ describe('video categories and exact tag filtering', () => {
         category: '',
       })
       runMigrations(legacy, ':memory:')
-      expect(getSchemaVersion(legacy)).toBe(6)
+      expect(getSchemaVersion(legacy)).toBe(7)
     } finally {
       legacy.close()
     }
+  })
+})
+
+describe('rating filter and random pick', () => {
+  beforeEach(() => {
+    for (const [id, rating] of [
+      ['r0', 0],
+      ['r3', 3],
+      ['r45', 4.5],
+      ['r5', 5],
+    ] as const)
+      videos.insert({
+        id,
+        filePath: `/r/${id}.mp4`,
+        fileName: id,
+        rating,
+        memo: '',
+        resumePosSec: 0,
+        category: 'r',
+      })
+  })
+  const ids = (ratingOp: 'gte' | 'lte' | 'eq', rating: number) =>
+    videos
+      .search({ category: 'r', rating, ratingOp, pageSize: 100 })
+      .videos.map((video) => video.id)
+      .sort()
+
+  it('compares ratings at least, at most and exactly, including half stars', () => {
+    expect(ids('gte', 4.5)).toEqual(['r45', 'r5'])
+    expect(ids('lte', 3)).toEqual(['r0', 'r3'])
+    expect(ids('eq', 4.5)).toEqual(['r45'])
+    expect(ids('eq', 0)).toEqual(['r0'])
+    expect(videos.search({ category: 'r', rating: 4, pageSize: 100 }).total).toBe(2)
+  })
+
+  it('picks a random id only among the filtered matches', () => {
+    for (let i = 0; i < 20; i++)
+      expect(['r45', 'r5']).toContain(
+        videos.randomId({ category: 'r', rating: 4.5, ratingOp: 'gte' }),
+      )
+    expect(
+      videos.randomId({ category: 'r', rating: 5, ratingOp: 'eq', q: 'nothing-matches' }),
+    ).toBeNull()
+  })
+})
+
+describe('performer removal', () => {
+  it('removes one performer from every video that has it and keeps the others', () => {
+    videos.insert({
+      id: 'p1',
+      filePath: '/p/1.mp4',
+      fileName: 'p1',
+      rating: 0,
+      memo: '',
+      resumePosSec: 0,
+      performers: '색기 고딩, 나기사 아이리',
+    })
+    videos.insert({
+      id: 'p2',
+      filePath: '/p/2.mp4',
+      fileName: 'p2',
+      rating: 0,
+      memo: '',
+      resumePosSec: 0,
+      performers: '색기 고딩',
+    })
+    videos.insert({
+      id: 'p3',
+      filePath: '/p/3.mp4',
+      fileName: 'p3',
+      rating: 0,
+      memo: '',
+      resumePosSec: 0,
+      performers: '미야시타 레나',
+    })
+    expect(videos.removePerformer(' 색기  고딩 ')).toBe(2)
+    expect(videos.findById('p1')?.performers).toBe('나기사 아이리')
+    expect(videos.findById('p2')?.performers).toBe('')
+    expect(videos.findById('p3')?.performers).toBe('미야시타 레나')
+    expect(videos.performerCounts().map((entry) => entry.name)).not.toContain('색기 고딩')
+  })
+})
+
+describe('folder filtering', () => {
+  it('matches videos inside a folder at any depth, case-insensitively, but not sibling prefixes', () => {
+    for (const [id, filePath] of [
+      ['f1', 'D:\\Media\\HoF\\a.mp4'],
+      ['f2', 'D:\\Media\\HoF\\Sub\\b.mp4'],
+      ['f3', 'D:\\Media\\HoF2\\c.mp4'],
+      ['f4', 'D:\\Media\\other\\d.mp4'],
+    ] as const) {
+      videos.insert({ id, filePath, fileName: id, rating: 0, memo: '', resumePosSec: 0 })
+    }
+    const ids = (folder: string) =>
+      videos
+        .search({ folder, pageSize: 100 })
+        .videos.map((video) => video.id)
+        .sort()
+    expect(ids('D:\\Media\\HoF')).toEqual(['f1', 'f2'])
+    expect(ids('d:\\media\\hof\\')).toEqual(['f1', 'f2'])
+    expect(ids('D:\\Media\\HoF\\Sub')).toEqual(['f2'])
+  })
+
+  it('sets the category of every non-removed video inside a folder only', () => {
+    for (const [id, filePath] of [
+      ['g1', 'D:\\Media\\HoF\\a.mp4'],
+      ['g2', 'D:\\Media\\HoF\\Sub\\b.mp4'],
+      ['g3', 'D:\\Media\\HoF2\\c.mp4'],
+      ['g4', 'D:\\Media\\HoF\\gone.mp4'],
+    ] as const) {
+      videos.insert({ id, filePath, fileName: id, rating: 0, memo: '', resumePosSec: 0 })
+    }
+    videos.markRemoved('g4', 'remove')
+    expect(videos.setCategoryForFolder('d:\\media\\hof', ' 명예의 전당 ')).toBe(2)
+    expect(videos.findById('g1')?.category).toBe('명예의 전당')
+    expect(videos.findById('g2')?.category).toBe('명예의 전당')
+    expect(videos.findById('g3')?.category).toBe('')
+    expect(videos.findById('g4')?.category).toBe('')
   })
 })

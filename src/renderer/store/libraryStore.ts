@@ -3,7 +3,10 @@ import { createJSONStorage, persist } from 'zustand/middleware'
 import type { Library, SearchQuery } from '@shared/types'
 
 type SortPreference = Pick<SearchQuery, 'sortBy' | 'sortDir'>
-type MetadataFilters = Pick<SearchQuery, 'category' | 'tag'>
+type MetadataFilters = Pick<
+  SearchQuery,
+  'category' | 'tag' | 'performer' | 'folder' | 'rating' | 'ratingOp'
+>
 const DEFAULT_SORT: SortPreference = { sortBy: 'createdAt', sortDir: 'desc' }
 const DEFAULT_METADATA_FILTERS: MetadataFilters = {}
 

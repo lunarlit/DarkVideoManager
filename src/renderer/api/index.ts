@@ -18,9 +18,18 @@ const libraryApi: WindowApi['library'] = {
   importFiles: (id2, files) => getApi().library.importFiles(id2, files),
   refresh: (id2) => getApi().library.refresh(id2),
   cancelWork: (id2) => getApi().library.cancelWork(id2),
+  folderTree: (id2) => getApi().library.folderTree(id2),
+  openFolder: (id2, folder) => getApi().library.openFolder(id2, folder),
 }
 const videosApi: WindowApi['videos'] = {
   metadataOptions: (libraryId, removed) => getApi().videos.metadataOptions(libraryId, removed),
+  performerCounts: (libraryId, removed) => getApi().videos.performerCounts(libraryId, removed),
+  performerPhoto: (name) => getApi().videos.performerPhoto(name),
+  randomId: (libraryId, query) => getApi().videos.randomId(libraryId, query),
+  deletePerformer: (libraryId, name) => getApi().videos.deletePerformer(libraryId, name),
+  setFolderCategory: (libraryId, folder, category) =>
+    getApi().videos.setFolderCategory(libraryId, folder, category),
+  avdbsLogin: () => getApi().videos.avdbsLogin(),
   search: (libraryId, query) => getApi().videos.search(libraryId, query),
   get: (libraryId, videoId) => getApi().videos.get(libraryId, videoId),
   revealSource: (libraryId, videoId) => getApi().videos.revealSource(libraryId, videoId),
@@ -42,6 +51,7 @@ const thumbnailsApi: WindowApi['thumbnails'] = {
   getForVideo: (libraryId, videoId) => getApi().thumbnails.getForVideo(libraryId, videoId),
   setPrimary: (libraryId, thumbnailId, videoId) =>
     getApi().thumbnails.setPrimary(libraryId, thumbnailId, videoId),
+  pruneForVideo: (libraryId, videoId) => getApi().thumbnails.pruneForVideo(libraryId, videoId),
   ensureForVideo: (libraryId, videoId, force = false) =>
     getApi().thumbnails.ensureForVideo(libraryId, videoId, force),
   captureAtTime: (libraryId, videoId, timeSec, makePrimary = true) =>

@@ -1,16 +1,25 @@
 import * as React from 'react'
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query'
-import { normalizeVideoCategory, serializeVideoTags } from '@shared/videoMetadata'
+import {
+  normalizeVideoCategory,
+  parseVideoTags,
+  serializeVideoTags,
+  serializeVideoPerformers,
+} from '@shared/videoMetadata'
 import { useVideoMetadataOptions } from '../../api/useVideos'
+import TagChipsInput from './TagChipsInput'
 
-function createDraft(category, tags) {
+function createDraft(category, tags, performers) {
   return {
     category,
     tags,
+    performers,
     savedCategory: category,
     savedTags: tags,
+    savedPerformers: performers,
     observedCategory: category,
     observedTags: tags,
+    observedPerformers: performers,
     pending: false,
     error: null,
     saved: false,
@@ -25,6 +34,10 @@ function tagsChanged(draft) {
   return serializeVideoTags(draft.tags) !== serializeVideoTags(draft.savedTags)
 }
 
+function performersChanged(draft) {
+  return serializeVideoPerformers(draft.performers) !== serializeVideoPerformers(draft.savedPerformers)
+}
+
 export default function VideoMetadataEditor({ video, libraryId, disabled = false }) {
   const queryClient = useQueryClient()
   const fieldId = React.useId()
@@ -34,12 +47,13 @@ export default function VideoMetadataEditor({ video, libraryId, disabled = false
   )
   const category = video.category ?? ''
   const tags = video.tags ?? ''
+  const performers = video.performers ?? ''
   // Keep unsaved input when the detail panel unmounts on a selection or tab change.
   // This cache stays in memory and is separate from server-owned video queries.
   const { data: draft } = useQuery({
     queryKey: draftKey,
-    queryFn: () => createDraft(category, tags),
-    initialData: () => createDraft(category, tags),
+    queryFn: () => createDraft(category, tags, performers),
+    initialData: () => createDraft(category, tags, performers),
     enabled: false,
     staleTime: Infinity,
     gcTime: 30 * 60_000,
@@ -48,24 +62,32 @@ export default function VideoMetadataEditor({ video, libraryId, disabled = false
 
   React.useEffect(() => {
     queryClient.setQueryData(draftKey, (current) => {
-      if (!current) return createDraft(category, tags)
-      if (current.observedCategory === category && current.observedTags === tags) return current
+      if (!current) return createDraft(category, tags, performers)
+      if (
+        current.observedCategory === category &&
+        current.observedTags === tags &&
+        current.observedPerformers === performers
+      )
+        return current
       // Refresh untouched fields, but never replace a local edit or an in-flight save.
       return {
         ...current,
         observedCategory: category,
         observedTags: tags,
+        observedPerformers: performers,
         ...(current.pending
           ? {}
           : {
               category: categoryChanged(current) ? current.category : category,
               tags: tagsChanged(current) ? current.tags : tags,
+              performers: performersChanged(current) ? current.performers : performers,
               savedCategory: category,
               savedTags: tags,
+              savedPerformers: performers,
             }),
       }
     })
-  }, [category, tags, draftKey, queryClient])
+  }, [category, tags, performers, draftKey, queryClient])
 
   const save = useMutation({
     mutationFn: async (submitted) => {
@@ -90,8 +112,13 @@ export default function VideoMetadataEditor({ video, libraryId, disabled = false
         category:
           current.category === submitted.category ? submitted.patch.category : current.category,
         tags: current.tags === submitted.tags ? submitted.patch.tags : current.tags,
+        performers:
+          current.performers === submitted.performers
+            ? submitted.patch.performers
+            : current.performers,
         savedCategory: submitted.patch.category,
         savedTags: submitted.patch.tags,
+        savedPerformers: submitted.patch.performers,
         pending: false,
         error: null,
         saved: true,
@@ -116,7 +143,53 @@ export default function VideoMetadataEditor({ video, libraryId, disabled = false
     },
   })
 
-  const hasChanges = categoryChanged(draft) || tagsChanged(draft)
+  // Tag chips save on their own, right away; category and performers wait for the
+  // save button.
+  const saveTags = useMutation({
+    mutationFn: async (submitted) => {
+      const result = await window.api.videos.updateMeta(submitted.libraryId, submitted.videoId, {
+        tags: submitted.tags,
+      })
+      if (!result.ok) throw new Error(result.error)
+    },
+    onSuccess: async (_result, submitted) => {
+      queryClient.setQueryData(submitted.draftKey, (current) => ({
+        ...current,
+        savedTags: submitted.tags,
+        error: null,
+      }))
+      await Promise.all([
+        queryClient.invalidateQueries({
+          queryKey: ['video', submitted.libraryId, submitted.videoId],
+        }),
+        queryClient.invalidateQueries({ queryKey: ['videos', submitted.libraryId] }),
+        queryClient.invalidateQueries({
+          queryKey: ['video-metadata-options', submitted.libraryId],
+        }),
+      ])
+    },
+    onError: (error, submitted) => {
+      queryClient.setQueryData(submitted.draftKey, (current) => ({
+        ...current,
+        error: error instanceof Error ? error.message : String(error),
+      }))
+    },
+  })
+  function applyTags(nextTags) {
+    const serialized = serializeVideoTags(nextTags.join(', '))
+    changeField('tags', serialized)
+    saveTags.mutate({ libraryId, videoId: video.id, draftKey, tags: serialized })
+  }
+  function addTags(added) {
+    const current = parseVideoTags(queryClient.getQueryData(draftKey)?.tags)
+    applyTags([...current, ...added])
+  }
+  function removeTag(tag) {
+    const current = parseVideoTags(queryClient.getQueryData(draftKey)?.tags)
+    applyTags(current.filter((value) => value.toLowerCase() !== tag.toLowerCase()))
+  }
+
+  const hasChanges = categoryChanged(draft) || performersChanged(draft)
   function changeField(field, value) {
     queryClient.setQueryData(draftKey, (current) => ({
       ...current,
@@ -128,22 +201,39 @@ export default function VideoMetadataEditor({ video, libraryId, disabled = false
   function submit(event) {
     event.preventDefault()
     const current = queryClient.getQueryData(draftKey)
-    if (disabled || current.pending || (!categoryChanged(current) && !tagsChanged(current))) return
+    if (
+      disabled ||
+      current.pending ||
+      (!categoryChanged(current) && !performersChanged(current))
+    )
+      return
     save.mutate({
       libraryId,
       videoId: video.id,
       draftKey,
       category: current.category,
       tags: current.tags,
+      performers: current.performers,
       patch: {
         category: normalizeVideoCategory(current.category),
         tags: serializeVideoTags(current.tags),
+        performers: serializeVideoPerformers(current.performers),
       },
     })
   }
 
   return (
     <form onSubmit={submit} aria-label="영상 분류 편집" className="space-y-3">
+      <div>
+        <p className="mb-1 text-xs text-zinc-400">태그</p>
+        <TagChipsInput
+          tags={parseVideoTags(draft.tags)}
+          suggestions={options.data?.tags ?? []}
+          onAdd={addTags}
+          onRemove={removeTag}
+          disabled={disabled}
+        />
+      </div>
       <div>
         <label htmlFor={`${fieldId}-category`} className="mb-1 block text-xs text-zinc-400">
           카테고리
@@ -165,25 +255,32 @@ export default function VideoMetadataEditor({ video, libraryId, disabled = false
         </datalist>
       </div>
       <div>
-        <label htmlFor={`${fieldId}-tags`} className="mb-1 block text-xs text-zinc-400">
-          태그
+        <label htmlFor={`${fieldId}-performers`} className="mb-1 block text-xs text-zinc-400">
+          배우
         </label>
         <input
-          id={`${fieldId}-tags`}
-          value={draft.tags}
-          onChange={(event) => changeField('tags', event.target.value)}
+          id={`${fieldId}-performers`}
+          list={`${fieldId}-performers-list`}
+          value={draft.performers}
+          onChange={(event) => changeField('performers', event.target.value)}
           disabled={disabled}
-          aria-describedby={`${fieldId}-tags-help`}
-          placeholder="#선수명 #리그 또는 쉼표로 구분"
+          autoComplete="off"
+          aria-describedby={`${fieldId}-performers-help`}
+          placeholder="배우명, 쉼표로 구분"
           className="w-full rounded bg-zinc-800 px-2 py-1.5 text-xs text-zinc-200 outline-hidden focus:ring-1 focus:ring-indigo-500 disabled:opacity-50"
         />
-        <p id={`${fieldId}-tags-help`} className="mt-1 text-xs leading-relaxed text-zinc-500">
-          #선수명 #리그 또는 쉼표로 구분합니다. 비우고 저장하면 삭제됩니다.
+        <datalist id={`${fieldId}-performers-list`}>
+          {(options.data?.performers ?? []).map((value) => (
+            <option key={value} value={value} />
+          ))}
+        </datalist>
+        <p id={`${fieldId}-performers-help`} className="mt-1 text-xs leading-relaxed text-zinc-500">
+          여러 명은 쉼표로 구분합니다. 비우고 저장하면 삭제됩니다.
         </p>
       </div>
       {options.isError && !disabled && (
         <p className="text-xs text-amber-200">
-          기존 카테고리를 불러오지 못했습니다. 직접 입력할 수 있습니다.{' '}
+          기존 분류를 불러오지 못했습니다. 직접 입력할 수 있습니다.{' '}
           <button
             type="button"
             onClick={() => void options.refetch()}

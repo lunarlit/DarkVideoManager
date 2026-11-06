@@ -53,10 +53,14 @@ describe('video metadata normalization', () => {
   it('deduplicates nonempty options across every supplied video', () => {
     expect(
       collectVideoMetadataOptions([
-        { category: '', tags: ' #PLAYER, player ' },
-        { category: ' 야구 ', tags: '선수명' },
-        { category: '야구', tags: '#player' },
+        { category: '', tags: ' #PLAYER, player ', performers: '나미 나미, 나기사 아이리' },
+        { category: ' 야구 ', tags: '선수명', performers: '나미 나미' },
+        { category: '야구', tags: '#player', performers: '' },
       ]),
-    ).toEqual({ categories: ['야구'], tags: ['선수명', 'PLAYER'] })
+    ).toEqual({
+      categories: ['야구'],
+      tags: ['선수명', 'PLAYER'],
+      performers: ['나기사 아이리', '나미 나미'],
+    })
   })
 })

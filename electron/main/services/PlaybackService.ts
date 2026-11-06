@@ -20,6 +20,7 @@ interface PlaybackSession {
 const activeSessions = new Map<string, PlaybackSession>()
 const keyFor = (libraryId: string, videoId: string) => libraryId + ':' + videoId
 
+
 export function startPlayback(
   libraryId: string,
   videoId: string,
@@ -32,9 +33,26 @@ export function startPlayback(
   if (existing) return existing.historyId
   const video = new VideoRepository(db).findById(videoId)
   if (!video) throw new Error('Video not found')
-  const historyId = randomUUID()
   const position = Math.max(0, initialPosition ?? video.resumePosSec ?? 0)
-  new PlayHistoryRepository(db).insert({
+  const history = new PlayHistoryRepository(db)
+  // Playing the same video as the last recorded playback continues that record
+  // instead of counting another viewing. This also covers a player that
+  // remounts right away (React StrictMode runs effects twice in development).
+  const latest = history.latest()
+  if (latest && latest.videoId === videoId) {
+    activeSessions.set(key, {
+      historyId: latest.id,
+      libraryId,
+      videoId,
+      lastPosition: position,
+      lastSampleAt: Date.now(),
+      watchedSec: latest.durationWatchedSec ?? 0,
+      releaseSource: acquireSourceFile(video.filePath),
+    })
+    return latest.id
+  }
+  const historyId = randomUUID()
+  history.insert({
     id: historyId,
     videoId,
     startedAt: new Date().toISOString(),

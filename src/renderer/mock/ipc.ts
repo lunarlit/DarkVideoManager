@@ -1,5 +1,5 @@
 import type { WindowApi } from '../../../electron/preload'
-import { DEFAULT_SEEK_STEP_SEC, SeekStepSecZ } from '../../shared/playerSettings'
+import { DEFAULT_PLAYER, DEFAULT_SEEK_STEP_SEC, SeekStepSecZ } from '../../shared/playerSettings'
 import { DEFAULT_SUBTITLE_CONCURRENCY, SubtitleConcurrencyZ } from '../../shared/subtitleQueue'
 
 import { DEFAULT_PRIVACY_SETTINGS, PrivacySettingsZ } from '../../shared/privacy'
@@ -89,6 +89,7 @@ const videosByLibrary = new Map<string, Video[]>([
         title: 'Sample video',
         rating: 4,
         tags: 'demo, sample',
+        performers: '',
         playCount: 2,
         playTimeSec: 60,
         hasSubtitles: false,
@@ -172,6 +173,7 @@ const mockSettings = {
   cacheLimitGb: 10,
   seekStepSec: DEFAULT_SEEK_STEP_SEC,
   nativePlayer: null as import('../../shared/types').NativePlayerInfo | null,
+  defaultPlayer: DEFAULT_PLAYER as import('../../shared/playerSettings').DefaultPlayer,
 }
 let mockCacheBytes = 512 * 1024 * 1024
 const mockCacheInfo = () => ({
@@ -321,6 +323,14 @@ function enqueueMockSubtitleJob(
 
 function emitProgress(progress: ImportProgress): void {
   progressListeners.forEach((listener) => listener(progress))
+}
+
+function matchesRating(video: Video, query: SearchQuery): boolean {
+  if (query.rating === undefined) return true
+  const value = video.rating ?? 0
+  if (query.ratingOp === 'lte') return value <= query.rating
+  if (query.ratingOp === 'eq') return value === query.rating
+  return value >= query.rating
 }
 
 function sortVideos(videos: Video[], query: SearchQuery): Video[] {
@@ -747,6 +757,9 @@ export const mockApi: WindowApi = {
     importFiles: mockImport,
     refresh: async () => ok({ added: 0, skipped: 1, removed: 0, errors: [] }),
     cancelWork: async () => ok(true),
+    folderTree: async () =>
+      ok({ roots: ['/mock/videos'], dirs: [{ path: '/mock/videos', count: 1 }] }),
+    openFolder: async () => ok(null),
   },
   videos: {
     metadataOptions: async (libraryId, removed = false) =>
@@ -757,12 +770,61 @@ export const mockApi: WindowApi = {
           ),
         ),
       ),
+    deletePerformer: async (libraryId, name) => {
+      const target = name.trim().toLowerCase()
+      let changed = 0
+      for (const video of videosByLibrary.get(libraryId) ?? []) {
+        const names = (video.performers ?? '').split(',').map((value) => value.trim())
+        const kept = names.filter((value) => value && value.toLowerCase() !== target)
+        if (kept.length !== names.filter(Boolean).length) {
+          video.performers = kept.join(', ')
+          changed++
+        }
+      }
+      return ok(changed)
+    },
+    setFolderCategory: async (libraryId, folder, category) => {
+      const prefix = folder.replace(/[\\/]+$/, '').toLowerCase()
+      let changed = 0
+      for (const video of videosByLibrary.get(libraryId) ?? []) {
+        const path = video.filePath.toLowerCase()
+        if (
+          !video.removalMode &&
+          (path.startsWith(prefix + '/') || path.startsWith(prefix + '\\'))
+        ) {
+          video.category = category.trim()
+          changed++
+        }
+      }
+      return ok(changed)
+    },
+    performerCounts: async (libraryId, removed = false) => {
+      const counts = new Map<string, { name: string; count: number }>()
+      for (const video of videosByLibrary.get(libraryId) ?? [])
+        if (Boolean(video.removalMode) === removed)
+          for (const name of (video.performers ?? '').split(',').map((value) => value.trim())) {
+            if (!name) continue
+            const entry = counts.get(name.toLowerCase())
+            if (entry) entry.count += 1
+            else counts.set(name.toLowerCase(), { name, count: 1 })
+          }
+      return ok([...counts.values()].sort((left, right) => right.count - left.count))
+    },
+    performerPhoto: async () => ok(null),
+    avdbsLogin: async () => ok(false),
+    randomId: async (libraryId, query) => {
+      const matches = (videosByLibrary.get(libraryId) ?? []).filter(
+        (video) =>
+          Boolean(video.removalMode) === Boolean(query.removed) && matchesRating(video, query),
+      )
+      return ok(matches.length ? matches[Math.floor(Math.random() * matches.length)].id : null)
+    },
     search: async (libraryId, query) => {
       const videos = sortVideos(
         (videosByLibrary.get(libraryId) ?? []).filter(
           (video) =>
             Boolean(video.removalMode) === Boolean(query.removed) &&
-            (query.rating === undefined || video.rating >= query.rating) &&
+            matchesRating(video, query) &&
             (query.hasSubtitles === undefined ||
               (subtitlesByVideo.get(video.id)?.length ?? 0) > 0 === query.hasSubtitles),
         ),
@@ -801,6 +863,14 @@ export const mockApi: WindowApi = {
     delete: async (libraryId, videoId, mode = 'trash') => {
       const video = findVideo(libraryId, videoId)
       if (!video) return err('영상을 찾을 수 없습니다')
+      if (mode === 'delete') {
+        const list = videosByLibrary.get(libraryId) ?? []
+        videosByLibrary.set(
+          libraryId,
+          list.filter((entry) => entry.id !== videoId),
+        )
+        return ok(null)
+      }
       video.removalMode = mode
       return ok(null)
     },
@@ -848,6 +918,13 @@ export const mockApi: WindowApi = {
       const video = findVideo(libraryId, videoId)
       if (video) video.primaryThumbnailPath = selected.filePath
       return ok(null)
+    },
+    pruneForVideo: async (_libraryId, videoId) => {
+      const candidates = thumbnailsByVideo.get(videoId) ?? []
+      const kept = candidates.filter((thumbnail) => thumbnail.isPrimary)
+      if (!kept.length) return err('대표 썸네일이 없어 정리할 수 없습니다.')
+      thumbnailsByVideo.set(videoId, kept)
+      return ok(candidates.length - kept.length)
     },
     ensureForVideo: ensureMockThumbnails,
     listJobs: async (libraryId) =>

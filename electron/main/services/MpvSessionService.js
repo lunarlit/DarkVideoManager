@@ -403,7 +403,19 @@ mp.add_forced_key_binding('Ctrl+LEFT', 'darkvideomanager-seek-backward-30', func
 mp.add_forced_key_binding('Ctrl+a', 'darkvideomanager-seek-backward-30-a', function() seek_relative(-30) end, { repeatable = true })
 mp.add_forced_key_binding('UP', 'darkvideomanager-volume-up', function() adjust_volume(5) end, { repeatable = true })
 mp.add_forced_key_binding('DOWN', 'darkvideomanager-volume-down', function() adjust_volume(-5) end, { repeatable = true })
+-- 'f' sets the thumbnail above, so Enter (and Alt+Enter, as in the in-app player) toggles fullscreen.
+local function toggle_fullscreen()
+  mp.set_property_native('fullscreen', not mp.get_property_native('fullscreen', false))
+end
+for _, binding in ipairs({ 'ENTER', 'KP_ENTER', 'Alt+ENTER', 'Alt+KP_ENTER' }) do
+  mp.add_forced_key_binding(binding, 'darkvideomanager-fullscreen-' .. binding, toggle_fullscreen, { repeatable = false })
+end
 mp.add_key_binding('ESC', 'darkvideomanager-escape', function()
+  -- Leave fullscreen first; Esc in a window still closes the player.
+  if mp.get_property_native('fullscreen', false) then
+    mp.set_property_native('fullscreen', false)
+    return
+  end
   emit('escape')
   mp.commandv('quit')
 end)

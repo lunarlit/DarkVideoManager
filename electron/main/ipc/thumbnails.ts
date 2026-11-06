@@ -4,6 +4,7 @@ import { ok, err } from '@shared/result'
 import {
   getThumbnailsForVideo,
   setPrimaryThumbnail,
+  pruneThumbnails,
   ensureThumbnailForVideo,
   captureThumbnailAtTime,
   saveThumbnailImageCapture,
@@ -60,4 +61,13 @@ export function registerThumbnailHandlers(): void {
       }
     },
   )
+
+  registerIpcHandler(IPC.THUMBNAILS.PRUNE_FOR_VIDEO, async (_e, libraryId, videoId) => {
+    try {
+      return ok(await pruneThumbnails(libraryId, videoId))
+    } catch (e) {
+      log.error({ err: e }, 'thumbnails:pruneForVideo 오류')
+      return err((e as Error).message)
+    }
+  })
 }

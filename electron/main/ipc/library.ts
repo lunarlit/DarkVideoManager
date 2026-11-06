@@ -12,6 +12,8 @@ import {
   importFolders,
   importFiles,
   refreshLibrary,
+  getFolderTree,
+  openLibraryFolder,
 } from '../services/LibraryService'
 import { createLogger } from '../infra/logger'
 import { cancelLibraryWork } from '../services/LibraryWorkService'
@@ -59,6 +61,21 @@ export function registerLibraryHandlers(): void {
     const win = BrowserWindow.fromWebContents(event.sender)
     if (!win) return err('윈도우를 찾을 수 없습니다')
     return ok(await refreshLibrary(libraryId, win))
+  })
+  registerIpcHandler(IPC.LIBRARY.FOLDER_TREE, (_event, libraryId) => {
+    try {
+      return ok(getFolderTree(libraryId))
+    } catch (e) {
+      return err((e as Error).message)
+    }
+  })
+  registerIpcHandler(IPC.LIBRARY.OPEN_FOLDER, async (_event, libraryId, folder) => {
+    try {
+      await openLibraryFolder(libraryId, folder)
+      return ok(null)
+    } catch (e) {
+      return err((e as Error).message)
+    }
   })
   registerIpcHandler(IPC.LIBRARY.LIST, () => {
     try {

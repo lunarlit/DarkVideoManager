@@ -70,6 +70,13 @@ export class ThumbnailRepository {
     setPrimary.immediate()
   }
 
+  deleteByIds(videoId: string, ids: string[]): void {
+    const remove = this.db.prepare('DELETE FROM thumbnails WHERE id = ? AND video_id = ?')
+    this.db.transaction(() => {
+      for (const id of ids) remove.run(id, videoId)
+    })()
+  }
+
   deleteByVideoId(videoId: string): void {
     this.db.prepare('DELETE FROM thumbnails WHERE video_id = ?').run(videoId)
   }
