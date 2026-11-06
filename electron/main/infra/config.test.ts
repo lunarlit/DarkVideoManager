@@ -69,6 +69,15 @@ afterEach(() => {
 })
 
 describe('safe configuration persistence', () => {
+  it('accepts a bootstrapped library that has no folder yet', () => {
+    const config: Config = {
+      libraries: [{ ...example().libraries[0], folderPath: '', folderPaths: [] }],
+      lastActiveLibraryId: 'library-1',
+    }
+    saveConfig(config)
+    expect(loadConfig().libraries[0]).toMatchObject({ id: 'library-1', folderPath: '' })
+  })
+
   it('does not rotate or reformat an unchanged valid registry', () => {
     const original = '\uFEFF' + JSON.stringify(example())
     writeFileSync(state.path, original)

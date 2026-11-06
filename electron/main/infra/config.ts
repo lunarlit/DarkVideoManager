@@ -31,7 +31,9 @@ const ConfigSchema = z
             id: NonemptyString,
             name: NonemptyString,
             dbPath: NonemptyString,
-            folderPath: NonemptyString,
+            // Empty until the first folder is imported: the startup bootstrap
+            // (createEmptyLibrary) registers a library before any folder exists.
+            folderPath: z.string(),
             folderPaths: z.array(NonemptyString).optional(),
             createdAt: NonemptyString,
             lastOpenedAt: NonemptyString.optional(),
